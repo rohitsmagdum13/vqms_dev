@@ -1,0 +1,12 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+data/logs/
+data/vector_store/
+data/storage/
+uv.lock
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
