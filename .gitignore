@@ -1,12 +1,82 @@
+# ===========================
+# Environment & Secrets
+# ===========================
 .env
+.env.*
+!.env.copy
+
+# ===========================
+# Python
+# ===========================
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# ===========================
+# Virtual Environments
+# ===========================
 .venv/
-data/logs/
-data/vector_store/
-data/storage/
+venv/
+env/
+
+# ===========================
+# uv
+# ===========================
 uv.lock
+
+# ===========================
+# Testing & Linting
+# ===========================
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
-*.egg-info/
+.coverage
+htmlcov/
+coverage.xml
+*.cover
+
+# ===========================
+# IDE
+# ===========================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ===========================
+# Claude Code
+# ===========================
+.claude/
+
+# ===========================
+# OS Files
+# ===========================
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# ===========================
+# Data (local runtime artifacts)
+# ===========================
+data/logs/
+data/vector_store/
+data/storage/
+data/artifacts/
+
+# ===========================
+# Jupyter Notebooks
+# ===========================
+.ipynb_checkpoints/
+
+# ===========================
+# SSH Keys (safety net)
+# ===========================
+*.pem
+*.key

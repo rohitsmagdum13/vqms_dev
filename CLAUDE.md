@@ -45,7 +45,6 @@ This file is read automatically by Claude Code at the start of every session. Fo
 - Never install packages with `pip` — always use `uv add`
 - Never write `boto3` calls that create, delete, or modify AWS resources (create_bucket, create_queue, etc.) — we have limited office IAM privileges
 - Never write CDK, SAM, CloudFormation, or Terraform code unless the user explicitly requests it
-- Never assume AWS credentials are available locally — always use the adapter pattern with local fallback
 
 ---
 
@@ -79,7 +78,7 @@ This file is read automatically by Claude Code at the start of every session. Fo
 
 ## Enterprise / Office Project Constraints — READ THIS CAREFULLY
 
-**This is a Hexaware office project.** We are working within a corporate AWS environment with **limited IAM privileges**. Claude Code must write all code with these constraints in mind. Do NOT assume full admin access to AWS.
+**This is a Hexaware office project.** We are working within a corporate AWS environment. We have **direct access** to pre-provisioned AWS services (S3, SQS, EventBridge, Bedrock) and PostgreSQL on RDS (via SSH tunnel through a bastion host). Claude Code must write all code with these constraints in mind.
 
 ### What This Means for Code
 
@@ -87,119 +86,62 @@ This file is read automatically by Claude Code at the start of every session. Fo
 
 2. **Use existing resource ARNs/names from environment variables.** Every AWS resource (bucket name, queue URL, state machine ARN, event bus name) comes from `.env` or environment variables — never hardcoded, never created at runtime. If a resource doesn't exist yet, log an error and fail gracefully — do NOT attempt to create it.
 
-3. **Limited IAM permissions — code defensively.**
-   - We likely have **read/write** to specific S3 buckets, SQS queues, and DynamoDB/PostgreSQL tables that were pre-approved.
-   - We likely have **invoke** access to Bedrock models, but NOT permission to provision models or manage Bedrock resources.
-   - We likely do NOT have permissions for: CloudFormation, CDK, Terraform, IAM policy changes, VPC modifications, KMS key creation, CloudWatch Logs group creation, X-Ray group management.
+3. **We HAVE access to these AWS services — code directly against them:**
+   - **S3:** Read/write to pre-provisioned buckets. All adapters talk directly to real S3.
+   - **SQS:** Read/write to pre-provisioned queues. All adapters talk directly to real SQS.
+   - **EventBridge:** Publish events to the pre-provisioned event bus. All adapters talk directly to real EventBridge.
+   - **Bedrock:** Invoke Claude Sonnet 3.5 and Titan Embed v2 models.
+   - **PostgreSQL on RDS:** Access via SSH tunnel through a bastion host (see SSH tunnel section below).
+   - **Redis:** Connect directly (local or cloud Redis).
+   - We do NOT have permissions for: CloudFormation, CDK, Terraform, IAM policy changes, VPC modifications, KMS key creation.
    - Always wrap AWS calls in `try/except` with specific `botocore.exceptions.ClientError` handling. Check for `AccessDeniedException` and `UnauthorizedAccess` errors and log them clearly so we know it's a permissions issue, not a bug.
 
 4. **No infrastructure-as-code unless explicitly requested.** Do not generate CDK, SAM, CloudFormation, Terraform, or Serverless Framework files. If the architecture doc mentions Step Functions ASL definitions or similar, write them as **reference documentation** in `Doc/`, not as deployable code.
 
 5. **Secrets come from environment variables, not Secrets Manager directly.** While the architecture doc references AWS Secrets Manager, in our dev environment we load secrets from `.env` files. The code should read from `os.environ` or `pydantic-settings`. Add a `# NOTE: In production, this will come from AWS Secrets Manager` comment where relevant, but do NOT write code that calls `secretsmanager:GetSecretValue` unless the user explicitly confirms we have that permission.
 
-6. **Prefer local/mock alternatives for development.**
-   - **S3:** Use local file storage (`data/storage/` directory) with an S3-compatible interface wrapper, so the code can switch to real S3 via config. Or use `moto` for testing.
-   - **SQS:** Use in-memory queues or simple async queues for local dev. Real SQS in deployed environments.
-   - **EventBridge:** Log events locally in dev. Publish to real EventBridge only when deployed.
-   - **Step Functions:** Use LangGraph for orchestration logic locally. Step Functions integration is a deployment-time concern.
-   - **Redis:** Use real Redis locally (easy to run) or `fakeredis` for tests.
-   - **PostgreSQL:** Use real PostgreSQL locally (standard dev setup).
+6. **Cloud-only adapters — NO local fallback mode.**
+   - All adapters connect directly to real cloud services. There is NO "local" vs "aws" branching.
+   - **S3:** `src/storage/s3_client.py` uses boto3 directly. No local filesystem fallback.
+   - **SQS:** `src/queues/sqs.py` uses boto3 directly. No in-memory queue fallback.
+   - **EventBridge:** `src/events/eventbridge.py` uses boto3 directly. No local event list fallback.
+   - **Microsoft Graph API:** `src/adapters/graph_api.py` uses real MSAL auth + Graph API calls. No stub/mock.
+   - **Redis:** Use real Redis (local or cloud).
+   - **PostgreSQL:** Use real PostgreSQL on RDS via SSH tunnel.
+   - For **testing**, use `moto` to mock AWS services and `fakeredis` to mock Redis. Tests do NOT require real AWS credentials.
 
-7. **Adapter pattern is critical.** Every AWS service interaction MUST go through an adapter in `src/adapters/` or `src/storage/`, `src/queues/`, `src/events/`. The adapter must:
-   - Accept a config flag: `local` vs `aws`
-   - In `local` mode: use filesystem, in-memory, or mock implementations
-   - In `aws` mode: use real `boto3` calls
-   - This is NOT over-engineering — it's a hard requirement because we cannot assume AWS access during local development
+7. **Adapter pattern — cloud-only, clean abstraction.** Every AWS service interaction MUST go through an adapter in `src/adapters/` or `src/storage/`, `src/queues/`, `src/events/`. The adapter provides:
+   - A clean async interface that the rest of the codebase imports
+   - Proper error handling with `botocore.exceptions.ClientError`
+   - Structured logging with correlation_id
+   - No branching between local/cloud — only the cloud implementation exists
 
-### Example: S3 Adapter with Local Fallback
+8. **PostgreSQL via SSH Tunnel.** The RDS instance is NOT directly accessible from local machines. All database connections go through an SSH tunnel to a bastion host:
+   - Use the `sshtunnel` library to establish the tunnel
+   - SSH config comes from env vars: `SSH_HOST`, `SSH_PORT`, `SSH_USERNAME`, `SSH_PRIVATE_KEY_PATH`, `RDS_HOST`, `RDS_PORT`
+   - The tunnel must stay alive for the app lifetime and close on shutdown
+   - Connection flow: local machine → SSH tunnel to bastion → bastion forwards to RDS
 
-```python
-"""S3 storage adapter with local filesystem fallback.
-
-In the office dev environment, we may not have S3 access.
-This adapter lets us develop and test locally using the filesystem,
-then switch to real S3 via APP_STORAGE_BACKEND=s3 in .env.
-"""
-
-import os
-import logging
-from pathlib import Path
-
-logger = logging.getLogger(__name__)
-
-STORAGE_BACKEND = os.getenv("APP_STORAGE_BACKEND", "local")  # "local" or "s3"
-
-
-async def upload_file(
-    bucket: str,
-    key: str,
-    content: bytes,
-    *,
-    correlation_id: str | None = None,
-) -> str:
-    """Upload a file to S3 or local filesystem based on config."""
-    if STORAGE_BACKEND == "local":
-        return await _upload_local(bucket, key, content, correlation_id=correlation_id)
-    else:
-        return await _upload_s3(bucket, key, content, correlation_id=correlation_id)
-
-
-async def _upload_local(
-    bucket: str, key: str, content: bytes, *, correlation_id: str | None = None
-) -> str:
-    """Store file in data/storage/<bucket>/<key> for local development."""
-    local_path = Path("data") / "storage" / bucket / key
-    local_path.parent.mkdir(parents=True, exist_ok=True)
-    local_path.write_bytes(content)
-    logger.info("Stored locally", extra={"path": str(local_path), "correlation_id": correlation_id})
-    return str(local_path)
-
-
-async def _upload_s3(
-    bucket: str, key: str, content: bytes, *, correlation_id: str | None = None
-) -> str:
-    """Upload to real S3. Requires pre-provisioned bucket and write access."""
-    import boto3
-    from botocore.exceptions import ClientError
-
-    try:
-        s3 = boto3.client("s3")
-        s3.put_object(Bucket=bucket, Key=key, Body=content)
-        s3_uri = f"s3://{bucket}/{key}"
-        logger.info("Uploaded to S3", extra={"s3_uri": s3_uri, "correlation_id": correlation_id})
-        return s3_uri
-    except ClientError as err:
-        error_code = err.response["Error"]["Code"]
-        if error_code in ("AccessDenied", "AccessDeniedException"):
-            logger.error(
-                "S3 permission denied — check IAM policy for this bucket",
-                extra={"bucket": bucket, "error_code": error_code, "correlation_id": correlation_id},
-            )
-        raise
-```
-
-### Additional .env Variables for Enterprise Mode
-
-```env
-# ===========================
-# ENTERPRISE / OFFICE MODE
-# ===========================
-APP_STORAGE_BACKEND=local                    # "local" or "s3" — use local for dev without AWS access
-APP_QUEUE_BACKEND=local                      # "local" or "sqs" — use local async queues in dev
-APP_EVENT_BACKEND=local                      # "local" or "eventbridge" — log events locally in dev
-APP_SECRETS_BACKEND=env                      # "env" or "secretsmanager" — use .env in dev
-```
+9. **Microsoft Graph API — real connection.** Email ingestion uses the real Microsoft Graph API:
+   - MSAL library for OAuth2 client_credentials flow
+   - Fetch emails via GET /users/{mailbox}/messages/{id}
+   - Send emails via POST /users/{mailbox}/sendMail
+   - Webhook subscription for real-time email detection
+   - Polling fallback every 60 seconds
+   - Auth credentials from env: `GRAPH_API_TENANT_ID`, `GRAPH_API_CLIENT_ID`, `GRAPH_API_CLIENT_SECRET`, `GRAPH_API_MAILBOX`
 
 ### Rules Summary for Claude Code
 
 | Situation | Do This | Do NOT Do This |
 |-----------|---------|----------------|
-| Need an S3 bucket | Read bucket name from env var, use adapter | Call `create_bucket()` |
-| Need an SQS queue | Read queue URL from env var, use adapter | Call `create_queue()` |
+| Need an S3 bucket | Read bucket name from env var, use boto3 adapter | Call `create_bucket()` |
+| Need an SQS queue | Read queue URL from env var, use boto3 adapter | Call `create_queue()` |
 | Need a secret | Read from `os.environ` | Call `secretsmanager:GetSecretValue` without permission |
 | AWS call fails with AccessDenied | Log clearly, raise with context | Silently retry or swallow the error |
-| Testing locally | Use `local` backend mode or `moto` mocks | Require real AWS credentials to run tests |
+| Testing | Use `moto` mocks for AWS, `fakeredis` for Redis | Write "if local" / "if aws" branching |
 | Infra setup needed | Document it in `Doc/infra_requirements.md` | Write CDK/Terraform/CloudFormation code |
+| Need database connection | Use SSH tunnel to bastion → RDS | Connect directly to RDS endpoint |
+| Need to send/fetch email | Use MSAL + Graph API | Use stub/mock Graph client |
 
 ---
 
@@ -776,7 +718,7 @@ vqms/
 ├── data/                                       # Local data storage
 │   ├── knowledge_base/                         # RAG source documents
 │   ├── vector_store/                           # Local vector DB files
-│   ├── storage/                                # Local S3 fallback (when APP_STORAGE_BACKEND=local)
+│   ├── storage/                                # Local data files (test artifacts, temp files)
 │   ├── logs/                                   # Execution logs
 │   └── artifacts/                              # Generated output files
 │
@@ -1480,7 +1422,7 @@ class TestVendorMatch:
 - Do not leave audit logging until later — every side-effect writes to audit.action_log from day one
 - Do not hardcode prompts across files — versioned templates in `prompts/` loaded by Bedrock Integration Service
 - Do not forget dead letter queue handling — every SQS queue has vqms-dlq as its DLQ
-- Do not assume AWS access in local development — use adapter pattern with local/mock backends for S3, SQS, EventBridge
+- Do not write local/mock fallback code in adapters — all adapters connect to real cloud services; use `moto` for tests only
 - Do not write boto3 resource creation calls (create_bucket, create_queue, etc.) — infra is pre-provisioned by the DevOps team
 - Do not treat portal and email paths as separate systems — they MUST converge into the same unified pipeline at the orchestrator
 - Do not confuse Path A and Path B email types — Path A sends RESOLUTION (full answer), Path B sends ACKNOWLEDGMENT (no answer, just confirmation)
@@ -1576,6 +1518,7 @@ psycopg2-binary
 pgvector
 sqlalchemy[asyncio]
 alembic
+sshtunnel                     # SSH tunnel to bastion host for RDS access
 
 # ===========================
 # Cache — Redis
@@ -1686,14 +1629,9 @@ LOG_LEVEL=DEBUG                              # DEBUG | INFO | WARNING | ERROR
 CORRELATION_ID_HEADER=X-Correlation-ID
 
 # ===========================
-# ENTERPRISE / OFFICE MODE
+# SECRETS BACKEND
 # ===========================
-# Controls whether AWS services are used or local alternatives
-# Set to "local" for development without AWS access
-APP_STORAGE_BACKEND=local                    # "local" or "s3"
-APP_QUEUE_BACKEND=local                      # "local" or "sqs"
-APP_EVENT_BACKEND=local                      # "local" or "eventbridge"
-APP_SECRETS_BACKEND=env                      # "env" or "secretsmanager"
+APP_SECRETS_BACKEND=env                      # "env" or "secretsmanager" — use .env in dev
 
 # ===========================
 # AWS GENERAL
@@ -1735,6 +1673,17 @@ POSTGRES_PASSWORD=<your-db-password>
 POSTGRES_POOL_MIN=5
 POSTGRES_POOL_MAX=20
 DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+
+# ===========================
+# SSH TUNNEL (Bastion → RDS)
+# ===========================
+# RDS is not directly accessible — all DB connections go through SSH tunnel
+SSH_HOST=<bastion-host-ip-or-dns>
+SSH_PORT=22
+SSH_USERNAME=<ssh-username>
+SSH_PRIVATE_KEY_PATH=<path-to-private-key.pem>
+RDS_HOST=<rds-endpoint.region.rds.amazonaws.com>
+RDS_PORT=5432
 
 # ===========================
 # PGVECTOR (Semantic Memory)

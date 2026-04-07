@@ -25,6 +25,8 @@ attrs==26.1.0
     # via
     #   aiohttp
     #   zeep
+bcrypt==5.0.0
+    # via paramiko
 boto3==1.42.83
     # via
     #   vqms (pyproject.toml)
@@ -40,7 +42,9 @@ certifi==2026.2.25
     #   httpx
     #   requests
 cffi==2.0.0
-    # via cryptography
+    # via
+    #   cryptography
+    #   pynacl
 charset-normalizer==3.4.7
     # via requests
 click==8.3.2
@@ -53,6 +57,7 @@ cryptography==46.0.6
     # via
     #   vqms (pyproject.toml)
     #   msal
+    #   paramiko
     #   pyjwt
     #   python-jose
 dataclasses-json==0.6.7
@@ -188,6 +193,10 @@ packaging==26.0
     #   langchain-core
     #   langsmith
     #   marshmallow
+paramiko==3.5.1
+    # via
+    #   vqms (pyproject.toml)
+    #   sshtunnel
 pgvector==0.4.2
     # via vqms (pyproject.toml)
 platformdirs==4.9.4
@@ -225,6 +234,8 @@ pyjwt==2.12.1
     # via
     #   msal
     #   simple-salesforce
+pynacl==1.6.2
+    # via paramiko
 pysnow==0.7.17
     # via vqms (pyproject.toml)
 python-dateutil==2.9.0.post0
@@ -293,6 +304,8 @@ sqlalchemy==2.0.49
     #   alembic
     #   langchain-classic
     #   langchain-community
+sshtunnel==0.4.0
+    # via vqms (pyproject.toml)
 starlette==1.0.0
     # via fastapi
 structlog==25.5.0
