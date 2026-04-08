@@ -20,12 +20,12 @@ import logging
 
 from config.settings import get_settings
 from src.adapters.graph_api import fetch_email_by_resource
-from src.adapters.salesforce import resolve_vendor
 from src.cache.redis_client import get_value, idempotency_key, set_with_ttl
 from src.events.eventbridge import publish_event
 from src.models.query import QuerySource, UnifiedQueryPayload
 from src.models.workflow import CaseExecution, Status
 from src.queues.sqs import publish
+from src.services.vendor_resolution import resolve_vendor
 from src.storage.s3_client import upload_file
 from src.utils.correlation import (
     generate_correlation_id,

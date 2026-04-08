@@ -15,6 +15,16 @@
 **Correction:** Use `.upper()` when comparing enum values to uppercase strings, or compare against the enum member directly.
 **Rule:** Always use `.upper()` or compare against enum members when checking enum values — don't assume case.
 
+## 2026-04-07 — Python LogRecord reserves "filename" attribute
+**Mistake:** Used `"filename"` as a key in logger `extra={"filename": attachment.file_name}` dict. Python's `logging.LogRecord` has a built-in `filename` attribute and raises `KeyError: "Attempt to overwrite 'filename' in LogRecord"`.
+**Correction:** Renamed the key to `"attachment_name"` in all logger extra dicts. Data dictionaries (S3 JSON, SQL bind params) can still use `"filename"` as a key — the restriction is only on logger extra dicts.
+**Rule:** Never use Python LogRecord reserved attribute names (filename, lineno, funcName, module, name, etc.) as keys in logger `extra={}` dicts.
+
+## 2026-04-07 — Edit replace_all changes unintended occurrences
+**Mistake:** Used `replace_all=True` with `old_string='"filename"'` to fix logger extra dicts, but it also changed `"filename"` in non-logger contexts (S3 JSON dict keys and SQL bind parameters) where it was correct.
+**Correction:** Had to manually revert the S3 JSON dict and SQL bind parameter keys back to `"filename"`. Should have used targeted edits on specific lines instead of `replace_all`.
+**Rule:** When using Edit with `replace_all=True`, verify the string only appears in the intended contexts. For strings that appear in multiple contexts with different meanings, use targeted edits instead.
+
 ## 2026-04-07 — paramiko 4.0.0 breaks sshtunnel (DSSKey removed)
 **Mistake:** `sshtunnel 0.4.0` references `paramiko.DSSKey` which was removed in `paramiko 4.0.0`, causing `AttributeError: module 'paramiko' has no attribute 'DSSKey'` when opening SSH tunnels.
 **Correction:** Pinned `paramiko<4.0.0` in `pyproject.toml`. Paramiko 3.5.1 still has `DSSKey`.

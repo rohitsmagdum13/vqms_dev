@@ -41,6 +41,7 @@ from httpx import ASGITransport, AsyncClient
 from moto import mock_aws
 
 from src.models.email import EmailAttachment, EmailMessage
+from src.models.vendor import VendorMatch, VendorTier
 
 # ---------------------------------------------------------------------------
 # Reference scenario email: Rajesh Mehta from TechNova Solutions
@@ -207,6 +208,27 @@ class FakeRedis:
 
 
 # ---------------------------------------------------------------------------
+# Mock vendor match for Salesforce adapter
+# ---------------------------------------------------------------------------
+
+TECHNOVA_VENDOR_MATCH = VendorMatch(
+    vendor_id="V-001",
+    vendor_name="TechNova Solutions",
+    vendor_tier=VendorTier.GOLD,
+    match_method="EMAIL_EXACT",
+    match_confidence=0.95,
+)
+
+
+async def _mock_resolve_vendor(sender_email, sender_name, body_text, **kwargs):
+    """Mock vendor resolution — returns TechNova for known emails, None otherwise."""
+    known = {"rajesh.mehta@technova.com"}
+    if sender_email.lower() in known:
+        return TECHNOVA_VENDOR_MATCH
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Test: Full Email Intake Pipeline (Happy Path — TechNova, Path A scenario)
 # ---------------------------------------------------------------------------
 
@@ -219,8 +241,9 @@ class TestEmailIntakeEndToEnd:
     """
 
     @pytest.mark.asyncio
+    @patch("src.services.email_intake.resolve_vendor", side_effect=_mock_resolve_vendor)
     @patch("src.services.email_intake.fetch_email_by_resource", new_callable=AsyncMock)
-    async def test_happy_path_technova_new_email(self, mock_fetch, aws_infra):
+    async def test_happy_path_technova_new_email(self, mock_fetch, mock_vendor, aws_infra):
         """Full pipeline: TechNova new email → S3 + EventBridge + SQS.
 
         Exercises the reference scenario from the architecture doc:
@@ -244,7 +267,7 @@ class TestEmailIntakeEndToEnd:
         assert result["query_id"].startswith("VQ-")
         assert result["execution_id"]  # UUID present
         assert result["correlation_id"]  # UUID present
-        assert result["vendor_id"] == "SF-001"  # TechNova matched by Salesforce stub
+        assert result["vendor_id"] == "V-001"  # TechNova matched by Salesforce
         assert result["thread_status"] == "NEW"
 
         # --- Verify S3: raw email stored ---
@@ -267,7 +290,7 @@ class TestEmailIntakeEndToEnd:
         assert raw_body["attachment_count"] == 1
         assert len(raw_body["attachments"]) == 1
         assert raw_body["attachments"][0]["filename"] == "INV-2026-0451.pdf"
-        assert raw_body["vendor_id"] == "SF-001"
+        assert raw_body["vendor_id"] == "V-001"
         assert raw_body["is_reply"] is False
         assert raw_body["status"] == "NEW"
 
@@ -286,7 +309,7 @@ class TestEmailIntakeEndToEnd:
         assert sqs_body["query_id"] == result["query_id"]
         assert sqs_body["execution_id"] == result["execution_id"]
         assert sqs_body["source"] == "email"
-        assert sqs_body["vendor_id"] == "SF-001"
+        assert sqs_body["vendor_id"] == "V-001"
         assert sqs_body["vendor_name"] == "TechNova Solutions"
         assert sqs_body["subject"] == "Invoice #INV-2026-0451 — Payment Status Query"
         assert sqs_body["thread_status"] == "NEW"
@@ -297,8 +320,9 @@ class TestEmailIntakeEndToEnd:
         assert any("email:" in k for k in fake_redis.stored_keys)
 
     @pytest.mark.asyncio
+    @patch("src.services.email_intake.resolve_vendor", side_effect=_mock_resolve_vendor)
     @patch("src.services.email_intake.fetch_email_by_resource", new_callable=AsyncMock)
-    async def test_reply_email_thread_correlation(self, mock_fetch, aws_infra):
+    async def test_reply_email_thread_correlation(self, mock_fetch, mock_vendor, aws_infra):
         """A reply email (has in_reply_to) should be marked EXISTING_OPEN."""
         mock_fetch.return_value = TECHNOVA_REPLY_EMAIL
         fake_redis = FakeRedis()
@@ -314,7 +338,7 @@ class TestEmailIntakeEndToEnd:
             )
 
         assert result["thread_status"] == "EXISTING_OPEN"
-        assert result["vendor_id"] == "SF-001"  # Still TechNova
+        assert result["vendor_id"] == "V-001"  # Still TechNova
 
         # Verify SQS payload has correct thread_status
         sqs = aws_infra["sqs"]
@@ -324,8 +348,9 @@ class TestEmailIntakeEndToEnd:
         assert sqs_body["thread_status"] == "EXISTING_OPEN"
 
     @pytest.mark.asyncio
+    @patch("src.services.email_intake.resolve_vendor", side_effect=_mock_resolve_vendor)
     @patch("src.services.email_intake.fetch_email_by_resource", new_callable=AsyncMock)
-    async def test_unknown_sender_resolves_to_unresolved(self, mock_fetch, aws_infra):
+    async def test_unknown_sender_resolves_to_unresolved(self, mock_fetch, mock_vendor, aws_infra):
         """An email from an unknown sender should have vendor_id=UNRESOLVED."""
         mock_fetch.return_value = UNKNOWN_SENDER_EMAIL
         fake_redis = FakeRedis()
@@ -353,8 +378,9 @@ class TestEmailIntakeEndToEnd:
         assert sqs_body["vendor_name"] == "Unknown Vendor"
 
     @pytest.mark.asyncio
+    @patch("src.services.email_intake.resolve_vendor", side_effect=_mock_resolve_vendor)
     @patch("src.services.email_intake.fetch_email_by_resource", new_callable=AsyncMock)
-    async def test_duplicate_email_is_rejected(self, mock_fetch, aws_infra):
+    async def test_duplicate_email_is_rejected(self, mock_fetch, mock_vendor, aws_infra):
         """Sending the same email twice should fail on the second attempt."""
         mock_fetch.return_value = TECHNOVA_EMAIL
         fake_redis = FakeRedis()
@@ -385,8 +411,9 @@ class TestEmailIntakeEndToEnd:
         assert len(messages.get("Messages", [])) == 1
 
     @pytest.mark.asyncio
+    @patch("src.services.email_intake.resolve_vendor", side_effect=_mock_resolve_vendor)
     @patch("src.services.email_intake.fetch_email_by_resource", new_callable=AsyncMock)
-    async def test_redis_down_still_processes_email(self, mock_fetch, aws_infra):
+    async def test_redis_down_still_processes_email(self, mock_fetch, mock_vendor, aws_infra):
         """If Redis is unavailable, email should still process successfully."""
         mock_fetch.return_value = TECHNOVA_EMAIL
 
@@ -409,7 +436,7 @@ class TestEmailIntakeEndToEnd:
             )
 
         assert result["status"] == "accepted"
-        assert result["vendor_id"] == "SF-001"
+        assert result["vendor_id"] == "V-001"
 
         # S3 and SQS should still have data
         s3 = aws_infra["s3"]
@@ -422,8 +449,9 @@ class TestEmailIntakeEndToEnd:
         assert len(messages["Messages"]) == 1
 
     @pytest.mark.asyncio
+    @patch("src.services.email_intake.resolve_vendor", side_effect=_mock_resolve_vendor)
     @patch("src.services.email_intake.fetch_email_by_resource", new_callable=AsyncMock)
-    async def test_correlation_id_propagated_to_sqs_message(self, mock_fetch, aws_infra):
+    async def test_correlation_id_propagated_to_sqs_message(self, mock_fetch, mock_vendor, aws_infra):
         """A provided correlation_id should appear in the SQS message payload."""
         mock_fetch.return_value = TECHNOVA_EMAIL
         fake_redis = FakeRedis()
@@ -461,8 +489,9 @@ class TestWebhookEndToEnd:
     """
 
     @pytest.mark.asyncio
+    @patch("src.services.email_intake.resolve_vendor", side_effect=_mock_resolve_vendor)
     @patch("src.services.email_intake.fetch_email_by_resource", new_callable=AsyncMock)
-    async def test_webhook_notification_processes_email(self, mock_fetch, aws_infra):
+    async def test_webhook_notification_processes_email(self, mock_fetch, mock_vendor, aws_infra):
         """POST /webhooks/ms-graph with a change notification → accepted."""
         mock_fetch.return_value = TECHNOVA_EMAIL
         fake_redis = FakeRedis()
@@ -492,7 +521,7 @@ class TestWebhookEndToEnd:
         assert body["status"] == "accepted"
         assert body["processed"] == 1
         assert body["results"][0]["query_id"].startswith("VQ-")
-        assert body["results"][0]["vendor_id"] == "SF-001"
+        assert body["results"][0]["vendor_id"] == "V-001"
 
     @pytest.mark.asyncio
     async def test_webhook_subscription_validation(self, aws_infra):
@@ -524,9 +553,10 @@ class TestWebhookEndToEnd:
         assert response.status_code == 400
 
     @pytest.mark.asyncio
+    @patch("src.services.email_intake.resolve_vendor", side_effect=_mock_resolve_vendor)
     @patch("src.services.email_intake.fetch_email_by_resource", new_callable=AsyncMock)
     async def test_webhook_duplicate_in_batch_handled_gracefully(
-        self, mock_fetch, aws_infra
+        self, mock_fetch, mock_vendor, aws_infra
     ):
         """If a notification batch contains a duplicate, it should not fail the whole batch."""
         mock_fetch.return_value = TECHNOVA_EMAIL

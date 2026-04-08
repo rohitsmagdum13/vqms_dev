@@ -12,8 +12,11 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from config.settings import get_settings
+from src.api.routes.auth import router as auth_router
+from src.api.routes.dashboard import router as dashboard_router
 from src.api.routes.queries import router as queries_router
 from src.api.routes.webhooks import router as webhooks_router
 from src.cache.redis_client import check_redis_health, close_redis, init_redis
@@ -134,9 +137,21 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# --- CORS: Allow Angular dev server ---
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:4200"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # --- Phase 2: Intake Routes ---
 app.include_router(queries_router)
 app.include_router(webhooks_router)
+
+# --- Portal Frontend Support Routes ---
+app.include_router(auth_router)
+app.include_router(dashboard_router)
 
 
 @app.get("/health")

@@ -93,6 +93,12 @@ class AppSettings(BaseSettings):
     kb_max_results: int = 5
     kb_resolution_confidence_threshold: float = 0.85
 
+    # --- Salesforce CRM ---
+    salesforce_username: str = ""
+    salesforce_password: str = ""
+    salesforce_security_token: str = ""
+    salesforce_login_url: str = "https://login.salesforce.com"
+
     # --- AWS S3 Buckets ---
     # Pre-provisioned bucket names, read from env vars
     s3_bucket_email_raw: str = "vqms-email-raw-prod"

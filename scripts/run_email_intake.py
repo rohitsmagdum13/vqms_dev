@@ -54,7 +54,7 @@ from src.adapters.graph_api import (
     fetch_email_by_resource,
     fetch_latest_email,
 )
-from src.adapters.salesforce import resolve_vendor
+from src.services.vendor_resolution import resolve_vendor
 from src.cache.redis_client import (
     close_redis,
     get_value,

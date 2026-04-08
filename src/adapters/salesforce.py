@@ -1,197 +1,484 @@
-"""Salesforce CRM adapter stub for vendor resolution.
+"""Salesforce CRM adapter for VQMS vendor resolution.
 
-In Phase 2, this is a STUB returning mock vendor data.
-Real Salesforce integration comes in Phase 8.
+Connects to Salesforce using the simple-salesforce library with
+username + password + security_token authentication. Provides
+methods to query custom Vendor objects via SOQL.
 
-The vendor resolution logic uses a 3-step fallback:
-  1. Exact email match against known contacts
-  2. Vendor ID regex extracted from email body
-  3. Fuzzy name similarity match
+This org uses CUSTOM Salesforce objects (not standard Contact/Account):
+  - Vendor_Account__c  — vendor companies (has Vendor_ID__c, Vendor_Tier__c)
+  - Vendor_Contact__c  — vendor contacts (has Email__c, Vendor_Account__c lookup)
 
-Mock vendor data covers the reference scenarios from the
-VQMS architecture document.
+The vendor resolution service (src/services/vendor_resolution.py)
+calls these methods as part of the three-step fallback:
+  1. find_contact_by_email() — exact email match on Vendor_Contact__c.Email__c
+  2. find_account_by_id() — lookup Vendor_Account__c by Salesforce ID
+  3. find_account_by_vendor_id() — lookup Vendor_Account__c by Vendor_ID__c (e.g. "V-001")
+  4. find_account_by_name() — fuzzy LIKE search on Vendor_Account__c.Name
+
+Credentials come from .env via config/settings.py:
+  SALESFORCE_USERNAME, SALESFORCE_PASSWORD,
+  SALESFORCE_SECURITY_TOKEN, SALESFORCE_LOGIN_URL
 """
 
 from __future__ import annotations
 
 import logging
-import re
+from functools import lru_cache
 
-from src.models.vendor import VendorMatch, VendorTier
+from simple_salesforce import Salesforce, SalesforceAuthenticationFailed
+from simple_salesforce.exceptions import SalesforceError
+
+from config.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
-# --- Mock Vendor Data ---
-# These represent pre-loaded Salesforce Account + Contact records.
-# In Phase 8, this data comes from real Salesforce API calls.
 
-_MOCK_VENDORS = [
-    {
-        "vendor_id": "SF-001",
-        "vendor_name": "TechNova Solutions",
-        "vendor_tier": VendorTier.GOLD,
-        "contacts": ["rajesh.mehta@technova.com", "support@technova.com"],
-        "risk_flags": [],
-    },
-    {
-        "vendor_id": "SF-002",
-        "vendor_name": "Acme Corporation",
-        "vendor_tier": VendorTier.STANDARD,
-        "contacts": ["john@acme-corp.com", "billing@acme-corp.com"],
-        "risk_flags": [],
-    },
-    {
-        "vendor_id": "SF-003",
-        "vendor_name": "Platinum Partner Inc",
-        "vendor_tier": VendorTier.PLATINUM,
-        "contacts": ["admin@platinumpartner.com"],
-        "risk_flags": [],
-    },
-]
+class SalesforceAdapterError(Exception):
+    """Raised when a Salesforce API call fails unexpectedly.
 
-# Regex pattern to find vendor IDs like "SF-001" or "VN-30892" in email body
-_VENDOR_ID_PATTERN = re.compile(r"\b(SF-\d{3}|VN-\d{4,6})\b", re.IGNORECASE)
-
-
-async def resolve_vendor(
-    sender_email: str,
-    sender_name: str,
-    body_text: str,
-    *,
-    correlation_id: str | None = None,
-) -> VendorMatch | None:
-    """Resolve a vendor from Salesforce CRM using a 3-step fallback.
-
-    Step 1: Exact email match against Salesforce Contact.Email
-    Step 2: Extract vendor ID from email body text via regex
-    Step 3: Fuzzy name similarity match against Salesforce Account.Name
-
-    Args:
-        sender_email: Email address of the person who sent the query.
-        sender_name: Display name of the sender.
-        body_text: Plain text body of the email (used for vendor ID extraction).
-        correlation_id: Tracing ID for this request.
-
-    Returns:
-        VendorMatch if a vendor was found, None if no match at all.
+    This wraps simple_salesforce exceptions so callers don't need
+    to import simple_salesforce directly.
     """
-    logger.info(
-        "Starting vendor resolution",
-        extra={
-            "sender_email": sender_email,
-            "sender_name": sender_name,
-            "correlation_id": correlation_id,
-        },
-    )
-
-    # Step 1: Exact email match
-    match = _match_by_email(sender_email)
-    if match is not None:
-        logger.info(
-            "Vendor matched by email",
-            extra={
-                "vendor_id": match.vendor_id,
-                "match_method": match.match_method,
-                "correlation_id": correlation_id,
-            },
-        )
-        return match
-
-    # Step 2: Vendor ID extracted from email body
-    match = _match_by_vendor_id_in_body(body_text)
-    if match is not None:
-        logger.info(
-            "Vendor matched by ID in body",
-            extra={
-                "vendor_id": match.vendor_id,
-                "match_method": match.match_method,
-                "correlation_id": correlation_id,
-            },
-        )
-        return match
-
-    # Step 3: Fuzzy name similarity
-    match = _match_by_name_similarity(sender_name)
-    if match is not None:
-        logger.info(
-            "Vendor matched by name similarity",
-            extra={
-                "vendor_id": match.vendor_id,
-                "match_method": match.match_method,
-                "correlation_id": correlation_id,
-            },
-        )
-        return match
-
-    # No match found — this is a normal business case for email path.
-    # The orchestrator will mark the vendor as UNRESOLVED.
-    logger.info(
-        "No vendor match found",
-        extra={
-            "sender_email": sender_email,
-            "correlation_id": correlation_id,
-        },
-    )
-    return None
 
 
-def _match_by_email(sender_email: str) -> VendorMatch | None:
-    """Step 1: Check if sender_email exactly matches a known contact."""
-    normalized_email = sender_email.lower().strip()
-    for vendor in _MOCK_VENDORS:
-        if normalized_email in vendor["contacts"]:
-            return VendorMatch(
-                vendor_id=vendor["vendor_id"],
-                vendor_name=vendor["vendor_name"],
-                vendor_tier=vendor["vendor_tier"],
-                match_method="EMAIL_EXACT",
-                match_confidence=0.95,
-                risk_flags=vendor["risk_flags"],
-            )
-    return None
+class SalesforceAdapter:
+    """Adapter for Salesforce CRM queries via simple-salesforce.
 
+    Uses lazy connection — the Salesforce session is created on
+    the first API call, not at instantiation time. This avoids
+    blocking app startup if Salesforce is temporarily unreachable.
 
-def _match_by_vendor_id_in_body(body_text: str) -> VendorMatch | None:
-    """Step 2: Look for a vendor ID pattern in the email body text."""
-    id_match = _VENDOR_ID_PATTERN.search(body_text)
-    if id_match is None:
-        return None
-
-    found_id = id_match.group(1).upper()
-    for vendor in _MOCK_VENDORS:
-        if vendor["vendor_id"].upper() == found_id:
-            return VendorMatch(
-                vendor_id=vendor["vendor_id"],
-                vendor_name=vendor["vendor_name"],
-                vendor_tier=vendor["vendor_tier"],
-                match_method="VENDOR_ID_BODY",
-                match_confidence=0.90,
-                risk_flags=vendor["risk_flags"],
-            )
-    return None
-
-
-def _match_by_name_similarity(sender_name: str) -> VendorMatch | None:
-    """Step 3: Simple case-insensitive substring match on vendor name.
-
-    In Phase 8, this will use proper fuzzy matching (e.g., fuzzywuzzy
-    or rapidfuzz). For now, a simple substring check is sufficient
-    to demonstrate the fallback chain.
+    Usage:
+        adapter = get_salesforce_adapter()
+        contact = adapter.find_contact_by_email("john@acme.com")
     """
-    if not sender_name:
-        return None
 
-    normalized_name = sender_name.lower().strip()
-    for vendor in _MOCK_VENDORS:
-        vendor_name_lower = vendor["vendor_name"].lower()
-        # Check if the sender name contains the vendor name or vice versa
-        if normalized_name in vendor_name_lower or vendor_name_lower in normalized_name:
-            return VendorMatch(
-                vendor_id=vendor["vendor_id"],
-                vendor_name=vendor["vendor_name"],
-                vendor_tier=vendor["vendor_tier"],
-                match_method="NAME_SIMILARITY",
-                match_confidence=0.60,
-                risk_flags=vendor["risk_flags"],
+    def __init__(self) -> None:
+        self._sf: Salesforce | None = None
+
+    def connect(self) -> Salesforce:
+        """Authenticate with Salesforce and return the session.
+
+        Uses username + password + security_token flow.
+        The login URL (login.salesforce.com vs test.salesforce.com)
+        is read from SALESFORCE_LOGIN_URL in .env.
+
+        Returns:
+            Authenticated Salesforce instance.
+
+        Raises:
+            SalesforceAdapterError: If authentication fails
+                (wrong password, expired token, locked account).
+        """
+        if self._sf is not None:
+            return self._sf
+
+        settings = get_settings()
+
+        if not settings.salesforce_username or not settings.salesforce_password:
+            raise SalesforceAdapterError(
+                "Salesforce credentials not configured. "
+                "Set SALESFORCE_USERNAME, SALESFORCE_PASSWORD, and "
+                "SALESFORCE_SECURITY_TOKEN in .env"
             )
-    return None
+
+        # Extract domain from login URL for simple-salesforce
+        # "https://login.salesforce.com" -> "login"
+        # "https://test.salesforce.com" -> "test"
+        login_url = settings.salesforce_login_url
+        domain = "login"
+        if "test.salesforce.com" in login_url:
+            domain = "test"
+
+        try:
+            self._sf = Salesforce(
+                username=settings.salesforce_username,
+                password=settings.salesforce_password,
+                security_token=settings.salesforce_security_token,
+                domain=domain,
+            )
+            logger.info(
+                "Salesforce connection established",
+                extra={"instance_url": self._sf.sf_instance},
+            )
+            return self._sf
+        except SalesforceAuthenticationFailed as exc:
+            logger.error(
+                "Salesforce authentication failed — check credentials",
+                extra={"error": str(exc)},
+            )
+            raise SalesforceAdapterError(
+                f"Salesforce authentication failed: {exc}"
+            ) from exc
+        except Exception as exc:
+            logger.error(
+                "Salesforce connection error",
+                extra={"error": str(exc)},
+            )
+            raise SalesforceAdapterError(
+                f"Salesforce connection error: {exc}"
+            ) from exc
+
+    def find_contact_by_email(
+        self,
+        email: str,
+        *,
+        correlation_id: str | None = None,
+    ) -> dict | None:
+        """Find a Vendor Contact by exact email match.
+
+        Uses custom object Vendor_Contact__c (NOT standard Contact).
+        The Email__c field stores vendor contact emails.
+        The Vendor_Account__c field is a lookup to the parent account.
+
+        SOQL: SELECT Id, Vendor_Account__c, Email__c, Name
+              FROM Vendor_Contact__c
+              WHERE Email__c = '<email>'
+              LIMIT 1
+
+        Args:
+            email: Email address to search for.
+            correlation_id: Tracing ID for log correlation.
+
+        Returns:
+            Dict with fields (Id, AccountId, Email, Name) where
+            AccountId is the Vendor_Account__c lookup value.
+            Returns None if no contact found.
+
+        Raises:
+            SalesforceAdapterError: If the SOQL query fails.
+        """
+        sf = self.connect()
+
+        # Escape single quotes in email to prevent SOQL injection
+        safe_email = email.replace("'", "\\'")
+        soql = (
+            "SELECT Id, Vendor_Account__c, Email__c, Name "
+            "FROM Vendor_Contact__c "
+            f"WHERE Email__c = '{safe_email}' "
+            "LIMIT 1"
+        )
+
+        logger.info(
+            "Salesforce SOQL: find_contact_by_email (Vendor_Contact__c)",
+            extra={
+                "email": email,
+                "correlation_id": correlation_id,
+            },
+        )
+
+        try:
+            result = sf.query(soql)
+        except SalesforceError as exc:
+            logger.error(
+                "Salesforce query failed: find_contact_by_email",
+                extra={
+                    "email": email,
+                    "error": str(exc),
+                    "correlation_id": correlation_id,
+                },
+            )
+            raise SalesforceAdapterError(
+                f"SOQL query failed for vendor contact email lookup: {exc}"
+            ) from exc
+
+        records = result.get("records", [])
+        if not records:
+            logger.info(
+                "No Vendor_Contact__c found for email",
+                extra={
+                    "email": email,
+                    "correlation_id": correlation_id,
+                },
+            )
+            return None
+
+        contact = records[0]
+        logger.info(
+            "Vendor_Contact__c found",
+            extra={
+                "contact_id": contact.get("Id"),
+                "account_id": contact.get("Vendor_Account__c"),
+                "contact_name": contact.get("Name"),
+                "correlation_id": correlation_id,
+            },
+        )
+        # Return normalized keys so vendor_resolution.py doesn't
+        # need to know about custom field names
+        return {
+            "Id": contact.get("Id"),
+            "AccountId": contact.get("Vendor_Account__c"),
+            "Email": contact.get("Email__c"),
+            "Name": contact.get("Name"),
+        }
+
+    def find_account_by_id(
+        self,
+        account_id: str,
+        *,
+        correlation_id: str | None = None,
+    ) -> dict | None:
+        """Find a Vendor Account by its Salesforce record ID.
+
+        Uses custom object Vendor_Account__c (NOT standard Account).
+
+        SOQL: SELECT Id, Name, Vendor_ID__c, Vendor_Tier__c,
+                     Vendor_Status__c, Category__c
+              FROM Vendor_Account__c
+              WHERE Id = '<account_id>'
+
+        Args:
+            account_id: Salesforce record ID (18-char or 15-char).
+            correlation_id: Tracing ID for log correlation.
+
+        Returns:
+            Dict with Vendor Account fields (Id, Name, Vendor_ID__c,
+            Vendor_Tier__c, Vendor_Status__c, Category__c)
+            or None if not found.
+
+        Raises:
+            SalesforceAdapterError: If the SOQL query fails.
+        """
+        sf = self.connect()
+
+        safe_id = account_id.replace("'", "\\'")
+        soql = (
+            "SELECT Id, Name, Vendor_ID__c, Vendor_Tier__c, "
+            "Vendor_Status__c, Category__c "
+            "FROM Vendor_Account__c "
+            f"WHERE Id = '{safe_id}'"
+        )
+
+        logger.info(
+            "Salesforce SOQL: find_account_by_id (Vendor_Account__c)",
+            extra={
+                "account_id": account_id,
+                "correlation_id": correlation_id,
+            },
+        )
+
+        try:
+            result = sf.query(soql)
+        except SalesforceError as exc:
+            logger.error(
+                "Salesforce query failed: find_account_by_id",
+                extra={
+                    "account_id": account_id,
+                    "error": str(exc),
+                    "correlation_id": correlation_id,
+                },
+            )
+            raise SalesforceAdapterError(
+                f"SOQL query failed for vendor account ID lookup: {exc}"
+            ) from exc
+
+        records = result.get("records", [])
+        if not records:
+            logger.info(
+                "No Vendor_Account__c found for ID",
+                extra={
+                    "account_id": account_id,
+                    "correlation_id": correlation_id,
+                },
+            )
+            return None
+
+        account = records[0]
+        logger.info(
+            "Vendor_Account__c found",
+            extra={
+                "account_id": account.get("Id"),
+                "account_name": account.get("Name"),
+                "vendor_id": account.get("Vendor_ID__c"),
+                "correlation_id": correlation_id,
+            },
+        )
+        return {
+            "Id": account.get("Id"),
+            "Name": account.get("Name"),
+            "Vendor_ID__c": account.get("Vendor_ID__c"),
+            "Vendor_Tier__c": account.get("Vendor_Tier__c"),
+            "Vendor_Status__c": account.get("Vendor_Status__c"),
+            "Category__c": account.get("Category__c"),
+        }
+
+    def find_account_by_vendor_id(
+        self,
+        vendor_id: str,
+        *,
+        correlation_id: str | None = None,
+    ) -> dict | None:
+        """Find a Vendor Account by its Vendor_ID__c field (e.g. "V-001").
+
+        This is used in Step 2 of vendor resolution when we extract
+        a vendor ID like "V-001" from the email body text.
+
+        SOQL: SELECT Id, Name, Vendor_ID__c, Vendor_Tier__c,
+                     Vendor_Status__c, Category__c
+              FROM Vendor_Account__c
+              WHERE Vendor_ID__c = '<vendor_id>'
+              LIMIT 1
+
+        Args:
+            vendor_id: Vendor ID string (e.g. "V-001", "V-012").
+            correlation_id: Tracing ID for log correlation.
+
+        Returns:
+            Dict with Vendor Account fields or None if not found.
+
+        Raises:
+            SalesforceAdapterError: If the SOQL query fails.
+        """
+        sf = self.connect()
+
+        safe_id = vendor_id.replace("'", "\\'")
+        soql = (
+            "SELECT Id, Name, Vendor_ID__c, Vendor_Tier__c, "
+            "Vendor_Status__c, Category__c "
+            "FROM Vendor_Account__c "
+            f"WHERE Vendor_ID__c = '{safe_id}' "
+            "LIMIT 1"
+        )
+
+        logger.info(
+            "Salesforce SOQL: find_account_by_vendor_id (Vendor_Account__c)",
+            extra={
+                "vendor_id": vendor_id,
+                "correlation_id": correlation_id,
+            },
+        )
+
+        try:
+            result = sf.query(soql)
+        except SalesforceError as exc:
+            logger.error(
+                "Salesforce query failed: find_account_by_vendor_id",
+                extra={
+                    "vendor_id": vendor_id,
+                    "error": str(exc),
+                    "correlation_id": correlation_id,
+                },
+            )
+            raise SalesforceAdapterError(
+                f"SOQL query failed for vendor ID lookup: {exc}"
+            ) from exc
+
+        records = result.get("records", [])
+        if not records:
+            logger.info(
+                "No Vendor_Account__c found for Vendor_ID__c",
+                extra={
+                    "vendor_id": vendor_id,
+                    "correlation_id": correlation_id,
+                },
+            )
+            return None
+
+        account = records[0]
+        logger.info(
+            "Vendor_Account__c found by Vendor_ID__c",
+            extra={
+                "sf_id": account.get("Id"),
+                "account_name": account.get("Name"),
+                "vendor_id": account.get("Vendor_ID__c"),
+                "correlation_id": correlation_id,
+            },
+        )
+        return {
+            "Id": account.get("Id"),
+            "Name": account.get("Name"),
+            "Vendor_ID__c": account.get("Vendor_ID__c"),
+            "Vendor_Tier__c": account.get("Vendor_Tier__c"),
+            "Vendor_Status__c": account.get("Vendor_Status__c"),
+            "Category__c": account.get("Category__c"),
+        }
+
+    def find_account_by_name(
+        self,
+        name: str,
+        *,
+        correlation_id: str | None = None,
+    ) -> list[dict]:
+        """Search for Vendor Accounts by fuzzy name match.
+
+        Uses custom object Vendor_Account__c (NOT standard Account).
+
+        SOQL: SELECT Id, Name, Vendor_ID__c, Vendor_Tier__c
+              FROM Vendor_Account__c
+              WHERE Name LIKE '%<name>%'
+              LIMIT 5
+
+        Args:
+            name: Name string to search for (substring match).
+            correlation_id: Tracing ID for log correlation.
+
+        Returns:
+            List of dicts with Vendor Account fields
+            (Id, Name, Vendor_ID__c, Vendor_Tier__c).
+            Empty list if no matches.
+
+        Raises:
+            SalesforceAdapterError: If the SOQL query fails.
+        """
+        sf = self.connect()
+
+        # Escape single quotes and % in name for SOQL safety
+        safe_name = name.replace("'", "\\'").replace("%", "\\%")
+        soql = (
+            "SELECT Id, Name, Vendor_ID__c, Vendor_Tier__c "
+            "FROM Vendor_Account__c "
+            f"WHERE Name LIKE '%{safe_name}%' "
+            "LIMIT 5"
+        )
+
+        logger.info(
+            "Salesforce SOQL: find_account_by_name (Vendor_Account__c)",
+            extra={
+                "search_name": name,
+                "correlation_id": correlation_id,
+            },
+        )
+
+        try:
+            result = sf.query(soql)
+        except SalesforceError as exc:
+            logger.error(
+                "Salesforce query failed: find_account_by_name",
+                extra={
+                    "search_name": name,
+                    "error": str(exc),
+                    "correlation_id": correlation_id,
+                },
+            )
+            raise SalesforceAdapterError(
+                f"SOQL query failed for vendor account name search: {exc}"
+            ) from exc
+
+        records = result.get("records", [])
+        logger.info(
+            "Vendor_Account__c name search results",
+            extra={
+                "search_name": name,
+                "result_count": len(records),
+                "correlation_id": correlation_id,
+            },
+        )
+        return [
+            {
+                "Id": r.get("Id"),
+                "Name": r.get("Name"),
+                "Vendor_ID__c": r.get("Vendor_ID__c"),
+                "Vendor_Tier__c": r.get("Vendor_Tier__c"),
+            }
+            for r in records
+        ]
+
+
+@lru_cache(maxsize=1)
+def get_salesforce_adapter() -> SalesforceAdapter:
+    """Return a cached SalesforceAdapter singleton.
+
+    The adapter uses lazy connection — Salesforce auth happens
+    on the first query, not when this function is called.
+    """
+    return SalesforceAdapter()

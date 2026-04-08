@@ -13,11 +13,23 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from src.models.email import EmailAttachment, EmailMessage
+from src.models.vendor import VendorMatch, VendorTier
 from src.services.email_intake import (
     _determine_thread_status,
     process_email_notification,
 )
 from src.utils.exceptions import DuplicateQueryError
+
+
+def _make_mock_vendor_match() -> VendorMatch:
+    """Create a mock VendorMatch for the TechNova reference scenario."""
+    return VendorMatch(
+        vendor_id="V-001",
+        vendor_name="TechNova Solutions",
+        vendor_tier=VendorTier.GOLD,
+        match_method="EMAIL_EXACT",
+        match_confidence=0.95,
+    )
 
 
 def _make_mock_email() -> EmailMessage:
@@ -64,6 +76,7 @@ class TestEmailIntake:
     """Tests for process_email_notification()."""
 
     @pytest.mark.asyncio
+    @patch("src.services.email_intake.resolve_vendor", new_callable=AsyncMock)
     @patch("src.services.email_intake.publish", new_callable=AsyncMock, return_value="msg-001")
     @patch("src.services.email_intake.publish_event", new_callable=AsyncMock, return_value="evt-001")
     @patch("src.services.email_intake.upload_file", new_callable=AsyncMock, return_value="s3://bucket/key")
@@ -71,19 +84,21 @@ class TestEmailIntake:
     @patch("src.services.email_intake.set_with_ttl", new_callable=AsyncMock)
     @patch("src.services.email_intake.fetch_email_by_resource", new_callable=AsyncMock)
     async def test_successful_email_processing(
-        self, mock_fetch, mock_set, mock_get, mock_s3, mock_event, mock_sqs
+        self, mock_fetch, mock_set, mock_get, mock_s3, mock_event, mock_sqs, mock_vendor
     ):
         """A valid email notification should be processed end-to-end."""
         mock_fetch.return_value = _make_mock_email()
+        mock_vendor.return_value = _make_mock_vendor_match()
 
         result = await process_email_notification(resource="messages/test-123")
 
         assert result["status"] == "accepted"
         assert result["query_id"].startswith("VQ-")
-        assert result["vendor_id"] == "SF-001"  # TechNova from Salesforce stub
+        assert result["vendor_id"] == "V-001"  # TechNova from mocked Salesforce
         assert result["thread_status"] == "NEW"
 
     @pytest.mark.asyncio
+    @patch("src.services.email_intake.resolve_vendor", new_callable=AsyncMock)
     @patch("src.services.email_intake.publish", new_callable=AsyncMock, return_value="msg-001")
     @patch("src.services.email_intake.publish_event", new_callable=AsyncMock, return_value="evt-001")
     @patch("src.services.email_intake.upload_file", new_callable=AsyncMock, return_value="s3://bucket/key")
@@ -91,10 +106,11 @@ class TestEmailIntake:
     @patch("src.services.email_intake.set_with_ttl", new_callable=AsyncMock)
     @patch("src.services.email_intake.fetch_email_by_resource", new_callable=AsyncMock)
     async def test_publishes_email_ingested_event(
-        self, mock_fetch, mock_set, mock_get, mock_s3, mock_event, mock_sqs
+        self, mock_fetch, mock_set, mock_get, mock_s3, mock_event, mock_sqs, mock_vendor
     ):
         """Email processing should publish an EmailIngested event."""
         mock_fetch.return_value = _make_mock_email()
+        mock_vendor.return_value = _make_mock_vendor_match()
 
         await process_email_notification(resource="messages/test-456")
 
@@ -104,6 +120,7 @@ class TestEmailIntake:
         assert detail_type == "EmailIngested"
 
     @pytest.mark.asyncio
+    @patch("src.services.email_intake.resolve_vendor", new_callable=AsyncMock)
     @patch("src.services.email_intake.publish", new_callable=AsyncMock, return_value="msg-001")
     @patch("src.services.email_intake.publish_event", new_callable=AsyncMock, return_value="evt-001")
     @patch("src.services.email_intake.upload_file", new_callable=AsyncMock, return_value="s3://bucket/key")
@@ -111,10 +128,11 @@ class TestEmailIntake:
     @patch("src.services.email_intake.set_with_ttl", new_callable=AsyncMock)
     @patch("src.services.email_intake.fetch_email_by_resource", new_callable=AsyncMock)
     async def test_enqueues_to_email_intake_queue(
-        self, mock_fetch, mock_set, mock_get, mock_s3, mock_event, mock_sqs
+        self, mock_fetch, mock_set, mock_get, mock_s3, mock_event, mock_sqs, mock_vendor
     ):
         """Email processing should enqueue to the email intake queue."""
         mock_fetch.return_value = _make_mock_email()
+        mock_vendor.return_value = _make_mock_vendor_match()
 
         await process_email_notification(resource="messages/test-789")
 
@@ -124,6 +142,7 @@ class TestEmailIntake:
         assert queue_name == "vqms-email-intake-queue"
 
     @pytest.mark.asyncio
+    @patch("src.services.email_intake.resolve_vendor", new_callable=AsyncMock)
     @patch("src.services.email_intake.publish", new_callable=AsyncMock, return_value="msg-001")
     @patch("src.services.email_intake.publish_event", new_callable=AsyncMock, return_value="evt-001")
     @patch("src.services.email_intake.upload_file", new_callable=AsyncMock, return_value="s3://bucket/key")
@@ -131,10 +150,11 @@ class TestEmailIntake:
     @patch("src.services.email_intake.set_with_ttl", new_callable=AsyncMock)
     @patch("src.services.email_intake.fetch_email_by_resource", new_callable=AsyncMock)
     async def test_stores_raw_email_in_s3(
-        self, mock_fetch, mock_set, mock_get, mock_s3, mock_event, mock_sqs
+        self, mock_fetch, mock_set, mock_get, mock_s3, mock_event, mock_sqs, mock_vendor
     ):
         """Raw email should be uploaded to S3."""
         mock_fetch.return_value = _make_mock_email()
+        mock_vendor.return_value = _make_mock_vendor_match()
 
         await process_email_notification(resource="messages/s3-test")
 
@@ -154,16 +174,18 @@ class TestEmailIntake:
             await process_email_notification(resource="messages/dup-test")
 
     @pytest.mark.asyncio
+    @patch("src.services.email_intake.resolve_vendor", new_callable=AsyncMock)
     @patch("src.services.email_intake.publish", new_callable=AsyncMock, return_value="msg-001")
     @patch("src.services.email_intake.publish_event", new_callable=AsyncMock, return_value="evt-001")
     @patch("src.services.email_intake.upload_file", new_callable=AsyncMock, return_value="s3://bucket/key")
     @patch("src.services.email_intake.fetch_email_by_resource", new_callable=AsyncMock)
     @patch("src.services.email_intake.get_value", new_callable=AsyncMock, side_effect=ConnectionError("Redis down"))
     async def test_redis_failure_allows_processing(
-        self, mock_get, mock_fetch, mock_s3, mock_event, mock_sqs
+        self, mock_get, mock_fetch, mock_s3, mock_event, mock_sqs, mock_vendor
     ):
         """If Redis is down, email should still be processed."""
         mock_fetch.return_value = _make_mock_email()
+        mock_vendor.return_value = _make_mock_vendor_match()
 
         result = await process_email_notification(resource="messages/redis-down")
         assert result["status"] == "accepted"
