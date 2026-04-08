@@ -321,6 +321,8 @@ def _serialize_email_for_storage(
         "from_name": email.sender_name,
         "to_address": email.to_addresses if hasattr(email, "to_addresses") else [],
         "cc_addresses": email.cc_addresses if hasattr(email, "cc_addresses") else [],
+        "to_recipients_detailed": getattr(email, "to_recipients_detailed", []),
+        "cc_recipients_detailed": getattr(email, "cc_recipients_detailed", []),
 
         # Content
         "subject": email.subject,
@@ -520,13 +522,27 @@ async def _store_email_record(
     is_auto_reply = email.is_auto_reply if hasattr(email, "is_auto_reply") else False
     language = email.language if hasattr(email, "language") else None
 
-    # Serialize to/cc as JSON arrays
-    to_address_json = json.dumps(
-        email.to_addresses if hasattr(email, "to_addresses") else []
-    )
-    cc_address_json = json.dumps(
-        email.cc_addresses if hasattr(email, "cc_addresses") else []
-    )
+    # Serialize to/cc as JSON arrays of {name, email} objects.
+    # Prefer the detailed recipients (with display names) captured
+    # from Graph API. Fall back to plain email strings if the
+    # detailed fields are empty (backward compat with older data).
+    to_detailed = getattr(email, "to_recipients_detailed", [])
+    cc_detailed = getattr(email, "cc_recipients_detailed", [])
+
+    if to_detailed:
+        to_address_json = json.dumps(to_detailed)
+    else:
+        # Fallback: wrap plain strings as {name: email, email: email}
+        to_address_json = json.dumps(
+            [{"name": e, "email": e} for e in (email.to_addresses or [])]
+        )
+
+    if cc_detailed:
+        cc_address_json = json.dumps(cc_detailed)
+    else:
+        cc_address_json = json.dumps(
+            [{"name": e, "email": e} for e in (email.cc_addresses or [])]
+        )
     recipients_json = json.dumps(
         email.recipients if email.recipients else []
     )

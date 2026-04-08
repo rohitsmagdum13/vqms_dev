@@ -971,12 +971,24 @@ The message format is identical regardless of entry point:
 |------|----------|-------------|
 | `src/api/routes/webhooks.py` | `handle_graph_notification()` | Receives Graph webhook, processes email |
 | `src/api/routes/queries.py` | `create_query()` | Portal POST /queries submission |
+| `src/api/routes/email_dashboard.py` | `list_email_chains()` | GET /emails — paginated email chain list with filters |
+| `src/api/routes/email_dashboard.py` | `get_email_stats()` | GET /emails/stats — dashboard aggregate statistics |
+| `src/api/routes/email_dashboard.py` | `get_email_chain()` | GET /emails/{query_id} — single email chain |
+| `src/api/routes/email_dashboard.py` | `download_attachment()` | GET /emails/{query_id}/attachments/{id}/download — presigned S3 URL |
+| `src/api/routes/dashboard.py` | `get_dashboard_kpis()` | GET /dashboard/kpis — portal vendor KPIs |
+| `src/api/routes/dashboard.py` | `list_queries()` | GET /queries — vendor query list |
+| `src/api/routes/dashboard.py` | `get_query_detail()` | GET /queries/{query_id} — single query detail |
+| `src/api/routes/auth.py` | `fake_login()` | POST /auth/login — dev fake auth |
 | `main.py` | `health_check()` | GET /health with DB + Redis status |
 | `main.py` | `lifespan()` | Startup/shutdown (SSH tunnel, DB, Redis) |
 
 ### Services
 | File | Function | What it does |
 |------|----------|-------------|
+| `src/services/email_dashboard_service.py` | `fetch_mail_chains()` | Paginated email chains from PostgreSQL |
+| `src/services/email_dashboard_service.py` | `fetch_single_mail_chain()` | Single chain by query_id |
+| `src/services/email_dashboard_service.py` | `fetch_email_stats()` | Aggregate stats for dashboard |
+| `src/services/email_dashboard_service.py` | `generate_attachment_download_url()` | Presigned S3 download URL |
 | `src/services/email_intake.py` | `process_email_notification()` | Full 11-step email pipeline |
 | `src/services/email_intake.py` | `_check_email_idempotency()` | Redis dedup for emails |
 | `src/services/email_intake.py` | `_determine_thread_status()` | NEW vs EXISTING_OPEN |

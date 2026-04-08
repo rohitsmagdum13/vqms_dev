@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from config.settings import get_settings
 from src.api.routes.auth import router as auth_router
 from src.api.routes.dashboard import router as dashboard_router
+from src.api.routes.email_dashboard import router as email_dashboard_router
 from src.api.routes.queries import router as queries_router
 from src.api.routes.webhooks import router as webhooks_router
 from src.cache.redis_client import check_redis_health, close_redis, init_redis
@@ -152,6 +153,9 @@ app.include_router(webhooks_router)
 # --- Portal Frontend Support Routes ---
 app.include_router(auth_router)
 app.include_router(dashboard_router)
+
+# --- Email Dashboard Routes ---
+app.include_router(email_dashboard_router)
 
 
 @app.get("/health")

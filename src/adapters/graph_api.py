@@ -165,8 +165,13 @@ async def fetch_email_by_resource(
     sender = data.get("from", {}).get("emailAddress", {})
 
     # Extract To and CC recipients from Graph API response
+    # Plain email strings for backward compat (recipients field)
     to_addresses = _extract_recipient_emails(data.get("toRecipients", []))
     cc_addresses = _extract_recipient_emails(data.get("ccRecipients", []))
+
+    # Name+email dicts for dashboard display and DB storage
+    to_recipients_detailed = _extract_recipients_with_names(data.get("toRecipients", []))
+    cc_recipients_detailed = _extract_recipients_with_names(data.get("ccRecipients", []))
 
     # Fetch attachments with content (for S3 upload)
     attachments = []
@@ -191,6 +196,8 @@ async def fetch_email_by_resource(
         recipients=to_addresses + cc_addresses,
         to_addresses=to_addresses,
         cc_addresses=cc_addresses,
+        to_recipients_detailed=to_recipients_detailed,
+        cc_recipients_detailed=cc_recipients_detailed,
         subject=data.get("subject", ""),
         body_text=data.get("body", {}).get("content", "")
         if data.get("body", {}).get("contentType") == "text"
@@ -260,6 +267,10 @@ async def fetch_latest_email(
     to_addresses = _extract_recipient_emails(msg.get("toRecipients", []))
     cc_addresses = _extract_recipient_emails(msg.get("ccRecipients", []))
 
+    # Name+email dicts for dashboard display and DB storage
+    to_recipients_detailed = _extract_recipients_with_names(msg.get("toRecipients", []))
+    cc_recipients_detailed = _extract_recipients_with_names(msg.get("ccRecipients", []))
+
     # Fetch attachments with content if present
     attachments = []
     if msg.get("hasAttachments", False):
@@ -284,6 +295,8 @@ async def fetch_latest_email(
         recipients=to_addresses + cc_addresses,
         to_addresses=to_addresses,
         cc_addresses=cc_addresses,
+        to_recipients_detailed=to_recipients_detailed,
+        cc_recipients_detailed=cc_recipients_detailed,
         subject=msg.get("subject", ""),
         body_text=msg.get("body", {}).get("content", "")
         if msg.get("body", {}).get("contentType") == "text"
@@ -430,12 +443,34 @@ def _extract_recipient_emails(recipients: list[dict]) -> list[str]:
 
     Graph API returns recipients as:
     [{"emailAddress": {"name": "...", "address": "user@example.com"}}]
+
+    Returns plain email strings for backward compatibility with
+    the EmailMessage.recipients field and existing code.
     """
     return [
         r.get("emailAddress", {}).get("address", "")
         for r in recipients
         if r.get("emailAddress", {}).get("address")
     ]
+
+
+def _extract_recipients_with_names(recipients: list[dict]) -> list[dict]:
+    """Extract recipients with both name and email from Graph API.
+
+    Graph API returns recipients as:
+    [{"emailAddress": {"name": "John Doe", "address": "john@acme.com"}}]
+
+    Returns a list of {"name": "...", "email": "..."} dicts.
+    If name is missing, falls back to the email address as name.
+    """
+    result = []
+    for r in recipients:
+        email_obj = r.get("emailAddress", {})
+        address = email_obj.get("address", "")
+        if address:
+            name = email_obj.get("name") or address
+            result.append({"name": name, "email": address})
+    return result
 
 
 def _detect_auto_reply(data: dict) -> bool:

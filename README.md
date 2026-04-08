@@ -329,6 +329,8 @@ Logs are written to both console and `data/logs/vqms_YYYY-MM-DD.log` (10 MB rota
 
 ---
 
+For full API documentation, see [Doc/API.md](Doc/API.md).
+
 ## API Endpoints (Phase 2)
 
 ### POST /queries -- Portal submission
@@ -377,6 +379,31 @@ Response (202):
 ```bash
 curl http://localhost:8000/health
 ```
+
+### Email Dashboard APIs
+
+List email chains (paginated, filterable):
+```bash
+curl "http://localhost:8000/emails?page=1&page_size=5"
+curl "http://localhost:8000/emails?status=New&priority=High&search=invoice"
+```
+
+Get email statistics:
+```bash
+curl http://localhost:8000/emails/stats
+```
+
+Get a single email chain:
+```bash
+curl http://localhost:8000/emails/VQ-2026-0001
+```
+
+Download an attachment (presigned S3 URL):
+```bash
+curl http://localhost:8000/emails/VQ-2026-0001/attachments/1/download
+```
+
+See [Doc/API.md](Doc/API.md) for full request/response documentation.
 
 ---
 

@@ -91,11 +91,19 @@ class EmailMessage(BaseModel):
     )
     to_addresses: list[str] = Field(
         default_factory=list,
-        description="Direct To recipients (email addresses only)",
+        description="Direct To recipients (email addresses only, backward compat)",
     )
     cc_addresses: list[str] = Field(
         default_factory=list,
-        description="CC recipients (email addresses only)",
+        description="CC recipients (email addresses only, backward compat)",
+    )
+    to_recipients_detailed: list[dict] = Field(
+        default_factory=list,
+        description="To recipients with display names: [{'name': '...', 'email': '...'}]",
+    )
+    cc_recipients_detailed: list[dict] = Field(
+        default_factory=list,
+        description="CC recipients with display names: [{'name': '...', 'email': '...'}]",
     )
 
     # Content
