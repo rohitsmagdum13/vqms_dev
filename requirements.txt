@@ -160,13 +160,16 @@ langsmith==0.7.25
     #   langchain-community
     #   langchain-core
 lxml==6.0.2
-    # via zeep
+    # via
+    #   python-docx
+    #   zeep
 mako==1.3.10
     # via alembic
 markupsafe==3.0.3
     # via
     #   jinja2
     #   mako
+    #   werkzeug
 marshmallow==3.26.2
     # via dataclasses-json
 more-itertools==11.0.1
@@ -252,6 +255,8 @@ python-dateutil==2.9.0.post0
     # via
     #   vqms (pyproject.toml)
     #   botocore
+python-docx==1.2.0
+    # via vqms (pyproject.toml)
 python-dotenv==1.2.2
     # via
     #   vqms (pyproject.toml)
@@ -328,7 +333,9 @@ tenacity==9.1.4
     #   langchain-community
     #   langchain-core
 tqdm==4.67.3
-    # via openai
+    # via
+    #   vqms (pyproject.toml)
+    #   openai
 typing-extensions==4.15.0
     # via
     #   aiosignal
@@ -339,6 +346,7 @@ typing-extensions==4.15.0
     #   openai
     #   pydantic
     #   pydantic-core
+    #   python-docx
     #   simple-salesforce
     #   sqlalchemy
     #   starlette
@@ -365,6 +373,8 @@ watchfiles==1.1.1
     # via uvicorn
 websockets==16.0
     # via uvicorn
+werkzeug==3.1.8
+    # via vqms (pyproject.toml)
 xxhash==3.6.0
     # via
     #   langgraph
