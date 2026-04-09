@@ -20,7 +20,9 @@ The LangGraph AI pipeline is built: SQS consumer, context loading, query analysi
 | Email intake (Graph API) | Built | Real MSAL OAuth2, attachment download + S3 upload, 30+ field storage |
 | Portal intake (POST /queries) | Built | Pydantic validation, X-Vendor-ID header auth |
 | S3 / SQS / EventBridge adapters | Built | boto3 direct, all cloud services connected |
-| Salesforce adapter | Built | Real Salesforce SOQL queries via simple-salesforce |
+| Salesforce adapter | Built | Real Salesforce SOQL queries via simple-salesforce (custom + standard Account) |
+| JWT Authentication | Built | Login/logout, Redis token blacklist, auth middleware, token refresh |
+| Vendor CRUD | Built | GET/PUT vendors via Salesforce standard Account object |
 | Bedrock adapter (LLM + Embeddings) | Built | Claude Sonnet 3.5 + Titan Embed v2 via invoke_model |
 | OpenAI adapter (Fallback) | Built | GPT-4o + text-embedding-3-small, automatic fallback |
 | LLM Factory (multi-provider) | Built | Bedrock → OpenAI fallback chain, 4 provider modes |
@@ -36,7 +38,9 @@ The LangGraph AI pipeline is built: SQS consumer, context loading, query analysi
 | SLA Monitoring | Phase 6 | Not yet built |
 | Frontend Portal (Angular) | Built | Full P1-P6 wizard flow: login, dashboard, 3-step query wizard, submit. Zero styling. |
 
-**Test suite:** Unit + integration tests. AWS services mocked with moto. Redis mocked with fakeredis. 24 routing unit tests.
+**Auth & Vendor CRUD:** JWT login/logout with Redis token blacklist, auth middleware on all protected routes, vendor GET/PUT against Salesforce standard Account. Merged from local_vqm backend with zero duplication.
+
+**Test suite:** Unit + integration tests. AWS services mocked with moto. Redis mocked with fakeredis. 24 routing unit tests. 42 auth + vendor CRUD tests.
 
 ---
 
@@ -191,7 +195,7 @@ This opens an SSH tunnel to the bastion host, connects to RDS, runs a test query
 
 ### 10. Run database migrations
 
-You can run all 6 migrations through the bastion tunnel:
+You can run all 7 migrations through the bastion tunnel:
 
 ```bash
 uv run python scripts/run_migrations.py
@@ -206,9 +210,10 @@ psql -U postgres -d vqms -f src/db/migrations/003_memory_schema.sql
 psql -U postgres -d vqms -f src/db/migrations/004_audit_schema.sql
 psql -U postgres -d vqms -f src/db/migrations/005_reporting_schema.sql
 psql -U postgres -d vqms -f src/db/migrations/006_intake_add_detail_columns.sql
+psql -U postgres -d vqms -f src/db/migrations/007_auth_tables_documentation.sql
 ```
 
-Note: Migration 003 requires the pgvector extension (`CREATE EXTENSION IF NOT EXISTS vector`). Migration 006 adds 14 detail columns to `intake.email_messages` (to_address, cc_addresses, body_preview, has_attachments, attachment_count, thread_id, is_reply, is_auto_reply, language, status, vendor_id, query_type, invoice_ref, po_ref, contract_ref, amount).
+Note: Migration 003 requires the pgvector extension (`CREATE EXTENSION IF NOT EXISTS vector`). Migration 006 adds 14 detail columns to `intake.email_messages`. Migration 007 documents the existing `public.tbl_users` and `public.tbl_user_roles` tables (safe `CREATE TABLE IF NOT EXISTS` — won't modify existing data).
 
 ### 11. Start the application
 
@@ -239,7 +244,7 @@ Open http://localhost:4200 in your browser. The full portal flow (Steps P1-P6):
 Other pages:
 - **/status** -- Enter a query ID and GET its details from the database
 
-**Note:** The backend must be running on port 8000 (CORS is configured for localhost:4200). No real authentication -- the fake login endpoint accepts any credentials.
+**Note:** The backend must be running on port 8000 (CORS is configured for localhost:4200). Authentication uses real JWT tokens — login with valid credentials from `public.tbl_users`.
 
 ### 13. Seed knowledge base articles (Phase 3)
 
@@ -277,7 +282,7 @@ Expected response:
 Tests use moto for AWS mocking and fakeredis for Redis. No real cloud credentials needed.
 
 ```bash
-# Run all 128 tests
+# Run all tests
 uv run pytest
 
 # Verbose output
@@ -395,7 +400,73 @@ uv run python tests/manual/test_kb_search.py
 
 For full API documentation, see [Doc/API.md](Doc/API.md).
 
-## API Endpoints (Phase 2)
+## API Endpoints
+
+### POST /auth/login -- User authentication
+
+Authenticate with username/email and password. Returns a JWT token.
+
+```bash
+curl -X POST http://localhost:8000/auth/login ^
+  -H "Content-Type: application/json" ^
+  -d "{\"username_or_email\": \"john_doe\", \"password\": \"secret123\"}"
+```
+
+Response (200):
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiJ9...",
+  "user_name": "john_doe",
+  "email": "john@acme.com",
+  "role": "VENDOR",
+  "tenant": "acme",
+  "vendor_id": null
+}
+```
+
+### POST /auth/logout -- Token blacklist
+
+Blacklist the current JWT token. Requires `Authorization: Bearer <token>` header.
+
+```bash
+curl -X POST http://localhost:8000/auth/logout ^
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9..."
+```
+
+Response (200):
+```json
+{"message": "Logged out successfully"}
+```
+
+### GET /vendors -- List active vendors
+
+List all active vendors from Salesforce (standard Account object). Requires JWT auth.
+
+```bash
+curl http://localhost:8000/vendors ^
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9..."
+```
+
+### PUT /vendors/{vendor_id} -- Update vendor
+
+Update vendor fields in Salesforce. At least one field required. Requires JWT auth.
+
+```bash
+curl -X PUT http://localhost:8000/vendors/V-001 ^
+  -H "Content-Type: application/json" ^
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9..." ^
+  -d "{\"website\": \"https://new-acme.com\", \"billing_city\": \"Delhi\"}"
+```
+
+Response (200):
+```json
+{
+  "success": true,
+  "vendor_id": "V-001",
+  "updated_fields": ["Website", "BillingCity"],
+  "message": "Updated 2 field(s)"
+}
+```
 
 ### POST /queries -- Portal submission
 
@@ -518,6 +589,11 @@ See [Doc/API.md](Doc/API.md) for full request/response documentation.
 | `GRAPH_API_CLIENT_SECRET` | Yes | Azure app client secret |
 | `GRAPH_API_MAILBOX` | Yes | Shared mailbox email address |
 
+| **JWT Authentication** | | |
+| `JWT_SECRET_KEY` | Yes | Secret key for signing JWT tokens |
+| `JWT_ALGORITHM` | No | Default `HS256` |
+| `SESSION_TIMEOUT_SECONDS` | No | JWT lifetime in seconds (default 1800 = 30 min) |
+| `TOKEN_REFRESH_THRESHOLD_SECONDS` | No | Refresh token if < this many seconds remaining (default 300) |
 | **LLM Provider** | | |
 | `LLM_PROVIDER` | No | Provider mode: `bedrock_with_openai_fallback` (default), `openai_with_bedrock_fallback`, `bedrock_only`, `openai_only` |
 | `EMBEDDING_PROVIDER` | No | Same modes as above, for embedding calls |
@@ -557,7 +633,8 @@ vqms/
     models/                            23 Pydantic models, 7 enums
       email.py                         EmailMessage, EmailAttachment, ParsedEmailPayload
       query.py                         QuerySubmission, UnifiedQueryPayload
-      vendor.py                        VendorProfile, VendorMatch, VendorTier
+      vendor.py                        VendorProfile, VendorMatch, VendorTier, VendorAccountData, VendorUpdateRequest
+      auth.py                          UserRecord, UserRoleRecord, LoginRequest, LoginResponse, TokenPayload
       ticket.py                        TicketRecord, TicketLink, RoutingDecision
       workflow.py                      WorkflowState, CaseExecution, AnalysisResult
       communication.py                 DraftEmailPackage, DraftResponse, ValidationReport
@@ -571,6 +648,7 @@ vqms/
       memory_context.py                Vendor profile (Redis→Salesforce) + history (PostgreSQL)
       routing.py                       Deterministic routing: SLA matrix, team assignment
       kb_search.py                     KB search: Titan Embed v2 + pgvector cosine similarity
+      auth.py                          JWT auth: login, validate, blacklist, refresh
     agents/
       abc_agent.py                     Base agent: Jinja2 templates, LLM calls, JSON parsing
       query_analysis.py                Query Analysis Agent (LLM Call #1)
@@ -578,8 +656,11 @@ vqms/
       graph.py                         LangGraph StateGraph with conditional edges
       sqs_consumer.py                  SQS long-poll consumer → LangGraph pipeline
       nodes/                           7 pipeline node files (context, analysis, routing, stubs)
+    api/middleware/
+      auth_middleware.py              JWT auth middleware (validates Bearer tokens)
     api/routes/
-      auth.py                          POST /auth/login (fake dev auth)
+      auth.py                          POST /auth/login, POST /auth/logout (real JWT auth)
+      vendors.py                       GET /vendors, PUT /vendors/{vendor_id}
       dashboard.py                     GET /dashboard/kpis, GET /queries, GET /queries/{id}
       queries.py                       POST /queries (portal entry point)
       webhooks.py                      POST /webhooks/ms-graph (email entry point)

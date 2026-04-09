@@ -59,6 +59,11 @@ DASHBOARD_TTL_SECONDS = 300
 # during active processing and becomes irrelevant after resolution.
 THREAD_TTL_SECONDS = 86400
 
+# 30 minutes — matches JWT session_timeout_seconds. A blacklisted
+# token only needs to remain blocked until it would have expired
+# naturally. After expiry, the token is invalid anyway.
+AUTH_BLACKLIST_TTL_SECONDS = 1800
+
 
 # --- Key Prefix ---
 KEY_PREFIX = "vqms:"
@@ -153,6 +158,23 @@ def thread_key(message_id: str) -> tuple[str, int]:
         Tuple of (key, ttl_seconds).
     """
     return f"{KEY_PREFIX}thread:{message_id}", THREAD_TTL_SECONDS
+
+
+def auth_blacklist_key(token_jti: str) -> tuple[str, int]:
+    """Build Redis key for JWT blacklist (logout/revocation).
+
+    When a user logs out, the token's JTI (unique ID) is stored
+    here so any subsequent request with that token is rejected.
+    The TTL matches the JWT lifetime — after natural expiry,
+    the token is invalid anyway and no longer needs blocking.
+
+    Args:
+        token_jti: The JTI (JWT ID) claim from the token.
+
+    Returns:
+        Tuple of (key, ttl_seconds).
+    """
+    return f"{KEY_PREFIX}auth:blacklist:{token_jti}", AUTH_BLACKLIST_TTL_SECONDS
 
 
 # --- Connection Management ---
@@ -271,3 +293,21 @@ async def get_value(key: str) -> str | None:
         raise RuntimeError("Redis client not initialized — call init_redis() first")
 
     return await _redis_client.get(key)
+
+
+async def exists_key(key: str) -> bool:
+    """Check if a key exists in Redis without fetching its value.
+
+    Useful for blacklist checks where we only need to know
+    if the key is present, not what it contains.
+
+    Args:
+        key: Redis key to check.
+
+    Returns:
+        True if the key exists, False otherwise.
+    """
+    if _redis_client is None:
+        raise RuntimeError("Redis client not initialized — call init_redis() first")
+
+    return bool(await _redis_client.exists(key))

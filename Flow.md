@@ -1,7 +1,7 @@
 ```
 ================================================================================
      VQMS -- END-TO-END RUNTIME WALKTHROUGH
-     Phase 3 Complete | AI Pipeline Built | LangGraph + Bedrock + pgvector
+     Phase 3 Complete | Auth + Vendor CRUD Merged | LangGraph + Bedrock + pgvector
 ================================================================================
 ```
 
@@ -17,6 +17,8 @@ exist only as empty `__init__.py` files or are not yet coded say [STUB] or
 
 ```
   PART 0:  Application Startup .......................... [IMPLEMENTED]
+  PART 0B: Authentication Flow (Login/Logout/JWT) ...... [IMPLEMENTED]
+  PART 0C: Vendor CRUD (GET/PUT via Salesforce) ........ [IMPLEMENTED]
   PART 1:  Email Entry Point (Steps E1 - E2) ........... [IMPLEMENTED]
   PART 2:  Portal Entry Point (Steps P1 - P6) .......... [IMPLEMENTED]
   PART 3:  SQS Consumer + Context Loading (Step 7) ..... [IMPLEMENTED]
@@ -122,11 +124,166 @@ exist only as empty `__init__.py` files or are not yet coded say [STUB] or
   +=====================================================================+
 
   +=====================================================================+
+  |                       MIDDLEWARE REGISTERED                           |
+  +=====================================================================+
+  |  AuthMiddleware              src/api/middleware/auth_middleware.py    |
+  |    - Skips: /health, /auth/login, /docs, /openapi.json, /redoc,    |
+  |      /webhooks/*                                                    |
+  |    - Validates Bearer JWT on all other routes                        |
+  |    - Sets request.state: username, role, tenant, is_authenticated   |
+  |    - Adds X-New-Token header if token near expiry                   |
+  +=====================================================================+
+
+  +=====================================================================+
   |                       ROUTES REGISTERED                              |
   +=====================================================================+
+  |  POST /auth/login            src/api/routes/auth.py                 |
+  |  POST /auth/logout           src/api/routes/auth.py                 |
+  |  GET  /vendors               src/api/routes/vendors.py              |
+  |  PUT  /vendors/{vendor_id}   src/api/routes/vendors.py              |
   |  POST /queries               src/api/routes/queries.py              |
   |  POST /webhooks/ms-graph     src/api/routes/webhooks.py             |
   |  GET  /health                main.py -> health_check()              |
+  +=====================================================================+
+```
+
+---
+
+## PART 0B: AUTHENTICATION FLOW (Login / Logout / JWT)
+
+User authentication merged from local_vqm backend. JWT-based auth with
+Redis token blacklist. Middleware validates tokens on all protected routes.
+
+```
+  +=====================================================================+
+  |                     LOGIN FLOW                                       |
+  +=====================================================================+
+  |                                                                      |
+  |  Client sends POST /auth/login                                       |
+  +---------------------------------------------------------------------+
+  | src/api/routes/auth.py -> login()                                    |
+  | Status: [IMPLEMENTED]                                                |
+  |                                                                      |
+  | Input: LoginRequest { username_or_email, password }                  |
+  | What happens:                                                        |
+  |   1. Calls src/services/auth.py -> authenticate_user()               |
+  |   2. authenticate_user():                                            |
+  |      a. Gets engine via get_engine()                                 |
+  |      b. Queries public.tbl_users by username OR email                |
+  |      c. Checks account status == "ACTIVE"                            |
+  |      d. Verifies password via werkzeug.check_password_hash           |
+  |         (wrapped in asyncio.to_thread — CPU-bound)                   |
+  |      e. Queries public.tbl_user_roles for role + tenant              |
+  |      f. Calls create_access_token(user_name, role, tenant)           |
+  |         - JWT claims: sub, role, tenant, exp, iat, jti (UUID)        |
+  |         - Signed with settings.jwt_secret_key (HS256)                |
+  |         - TTL: settings.session_timeout_seconds (default 30 min)     |
+  |   3. Returns LoginResponse { token, user_name, email, role, tenant } |
+  |                                                                      |
+  | On failure: Returns 401 { "detail": "..." }                          |
+  |   - "Invalid credentials" (wrong user/password)                      |
+  |   - "Account is inactive" (status != ACTIVE)                         |
+  |   - "No role assigned to this user"                                  |
+  |   - "Database not available"                                         |
+  +=====================================================================+
+
+  +=====================================================================+
+  |                     REQUEST AUTHENTICATION (Middleware)               |
+  +=====================================================================+
+  |                                                                      |
+  |  Every request (except skip paths) passes through:                   |
+  +---------------------------------------------------------------------+
+  | src/api/middleware/auth_middleware.py -> AuthMiddleware.dispatch()     |
+  | Status: [IMPLEMENTED]                                                |
+  |                                                                      |
+  | Skip paths (no auth needed):                                         |
+  |   /health, /auth/login, /docs, /openapi.json, /redoc, /webhooks/*   |
+  |                                                                      |
+  | What happens:                                                        |
+  |   1. Extract Bearer token from Authorization header                  |
+  |   2. Call src/services/auth.py -> validate_token(token)              |
+  |      a. Decode JWT with jose.jwt.decode()                            |
+  |      b. Check all 6 required claims present (sub, role, tenant,      |
+  |         exp, iat, jti)                                               |
+  |      c. Check Redis blacklist: auth_blacklist_key(jti) -> exists?    |
+  |         If Redis is down, allow token through (graceful degradation) |
+  |   3. If valid: set request.state.username, .role, .tenant,           |
+  |      .is_authenticated = True → continue to route handler            |
+  |   4. If invalid/missing: return 401 JSON immediately                 |
+  |   5. After route handler: check refresh_token_if_expiring()          |
+  |      If token has < 300s remaining, create new token + blacklist old |
+  |      Add X-New-Token response header with fresh token                |
+  +=====================================================================+
+
+  +=====================================================================+
+  |                     LOGOUT FLOW                                      |
+  +=====================================================================+
+  |                                                                      |
+  |  Client sends POST /auth/logout with Authorization: Bearer <token>   |
+  +---------------------------------------------------------------------+
+  | src/api/routes/auth.py -> logout()                                   |
+  | Status: [IMPLEMENTED]                                                |
+  |                                                                      |
+  | What happens:                                                        |
+  |   1. Extract Bearer token from header                                |
+  |   2. Call src/services/auth.py -> blacklist_token(token)             |
+  |      a. Decode JWT (verify_exp=False — allows blacklisting expired)  |
+  |      b. Extract JTI from claims                                      |
+  |      c. Store in Redis: vqms:auth:blacklist:<jti> = "blacklisted"    |
+  |         TTL = 1800s (matches JWT lifetime)                           |
+  |   3. Return { "message": "Logged out successfully" }                 |
+  |                                                                      |
+  | Storage writes:                                                      |
+  |   Redis: vqms:auth:blacklist:<jti> (30-min TTL, auto-cleanup)        |
+  +=====================================================================+
+```
+
+---
+
+## PART 0C: VENDOR CRUD (GET / PUT via Salesforce Standard Account)
+
+Vendor management endpoints merged from local_vqm. These query the STANDARD
+Salesforce Account object (not the custom Vendor_Account__c used by the AI
+pipeline). Both coexist in the Salesforce adapter.
+
+```
+  +=====================================================================+
+  |                     GET /vendors — List Active Vendors                |
+  +=====================================================================+
+  |                                                                      |
+  | src/api/routes/vendors.py -> list_vendors()                          |
+  | Status: [IMPLEMENTED]                                                |
+  |                                                                      |
+  | Auth: Requires valid JWT (any role)                                  |
+  |                                                                      |
+  | What happens:                                                        |
+  |   1. Calls SalesforceAdapter.get_all_active_vendors()                |
+  |   2. SOQL: SELECT Id, Name, Vendor_ID__c, Website, ... FROM Account |
+  |      WHERE Vendor_Status__c = 'Active'                               |
+  |   3. Returns list[VendorAccountData]                                 |
+  |                                                                      |
+  | Note: Queries STANDARD Account, not custom Vendor_Account__c.        |
+  +=====================================================================+
+
+  +=====================================================================+
+  |                     PUT /vendors/{vendor_id} — Update Vendor          |
+  +=====================================================================+
+  |                                                                      |
+  | src/api/routes/vendors.py -> update_vendor()                         |
+  | Status: [IMPLEMENTED]                                                |
+  |                                                                      |
+  | Auth: Requires valid JWT (any role)                                  |
+  | Input: VendorUpdateRequest (at least one field required)             |
+  |                                                                      |
+  | What happens:                                                        |
+  |   1. Validate VendorUpdateRequest (model_validator ensures >= 1 field)|
+  |   2. Call to_salesforce_fields() — snake_case → SF API names         |
+  |      e.g. billing_city → BillingCity, vendor_tier → Vendor_Tier__c   |
+  |   3. Call SalesforceAdapter.update_vendor_account()                  |
+  |      a. Finds Account by Vendor_ID__c = vendor_id                   |
+  |      b. Calls sf.Account.update(sf_id, fields)                      |
+  |   4. Returns VendorUpdateResult { success, vendor_id,                |
+  |      updated_fields, message }                                       |
   +=====================================================================+
 ```
 
@@ -1320,7 +1477,11 @@ real Resolution Agent and Communication Drafting Agent.
 | `src/api/routes/dashboard.py` | `get_dashboard_kpis()` | GET /dashboard/kpis — portal vendor KPIs |
 | `src/api/routes/dashboard.py` | `list_queries()` | GET /queries — vendor query list |
 | `src/api/routes/dashboard.py` | `get_query_detail()` | GET /queries/{query_id} — single query detail |
-| `src/api/routes/auth.py` | `fake_login()` | POST /auth/login — dev fake auth |
+| `src/api/routes/auth.py` | `login()` | POST /auth/login — real JWT auth against tbl_users |
+| `src/api/routes/auth.py` | `logout()` | POST /auth/logout — blacklist token in Redis |
+| `src/api/routes/vendors.py` | `list_vendors()` | GET /vendors — list active vendors from Salesforce Account |
+| `src/api/routes/vendors.py` | `update_vendor()` | PUT /vendors/{vendor_id} — update vendor in Salesforce Account |
+| `src/api/middleware/auth_middleware.py` | `AuthMiddleware` | JWT validation middleware on all protected routes |
 | `main.py` | `health_check()` | GET /health with DB + Redis status |
 | `main.py` | `lifespan()` | Startup/shutdown (SSH tunnel, DB, Redis) |
 
@@ -1350,6 +1511,11 @@ real Resolution Agent and Communication Drafting Agent.
 | `src/services/routing.py` | `assign_team()` | Category → team mapping |
 | `src/services/routing.py` | `check_automation_blocked()` | BLOCK_AUTOMATION risk flag check |
 | `src/services/kb_search.py` | `search_kb()` | Embed query → pgvector cosine similarity search |
+| `src/services/auth.py` | `authenticate_user()` | Login: query tbl_users, verify password, query tbl_user_roles, create JWT |
+| `src/services/auth.py` | `create_access_token()` | Create signed JWT with sub, role, tenant, exp, iat, jti claims |
+| `src/services/auth.py` | `validate_token()` | Decode JWT, check Redis blacklist |
+| `src/services/auth.py` | `blacklist_token()` | Store JTI in Redis with TTL for logout |
+| `src/services/auth.py` | `refresh_token_if_expiring()` | Create new token if < 300s remaining, blacklist old |
 
 ### Agents
 | File | Function | What it does |
@@ -1368,6 +1534,8 @@ real Resolution Agent and Communication Drafting Agent.
 | `src/adapters/graph_api.py` | `_detect_auto_reply()` | Check auto-reply headers |
 | `src/adapters/graph_api.py` | `_extract_recipient_emails()` | Parse to/cc from Graph |
 | `src/adapters/salesforce.py` | `SalesforceAdapter` | Real Salesforce SOQL queries (Vendor_Contact__c, Vendor_Account__c) |
+| `src/adapters/salesforce.py` | `get_all_active_vendors()` | SOQL on standard Account WHERE Vendor_Status__c = 'Active' |
+| `src/adapters/salesforce.py` | `update_vendor_account()` | Find Account by Vendor_ID__c, update allowed fields |
 | `src/services/vendor_resolution.py` | `resolve_vendor()` | 3-step vendor match via real Salesforce custom objects |
 | `src/adapters/bedrock.py` | `invoke_llm()` | Claude Sonnet 3.5 via Bedrock Messages API (with retry) |
 | `src/adapters/bedrock.py` | `embed_text()` | Titan Embed v2 → 1536-dim vector |
@@ -1399,7 +1567,8 @@ real Resolution Agent and Communication Drafting Agent.
 | `src/db/connection.py` | `stop_ssh_tunnel()` | Close SSH tunnel |
 | `src/db/connection.py` | `check_db_health()` | SELECT 1 health check |
 | `src/cache/redis_client.py` | `init_redis()` | Async Redis connection |
-| `src/cache/redis_client.py` | 7 key builders | idempotency, session, vendor, workflow, sla, dashboard, thread |
+| `src/cache/redis_client.py` | 8 key builders | idempotency, session, vendor, workflow, sla, dashboard, thread, auth_blacklist |
+| `src/cache/redis_client.py` | `exists_key()` | Check if Redis key exists (used by token blacklist) |
 | `src/cache/redis_client.py` | `set_with_ttl()` / `get_value()` | Redis read/write helpers |
 | `src/storage/s3_client.py` | `upload_file()` / `download_file()` | S3 put/get via boto3 |
 | `src/events/eventbridge.py` | `publish_event()` | EventBridge put_events |
@@ -1420,13 +1589,15 @@ real Resolution Agent and Communication Drafting Agent.
 | `004_audit_schema.sql` | audit.action_log, audit.validation_results |
 | `005_reporting_schema.sql` | reporting.sla_metrics |
 | `006_intake_add_detail_columns.sql` | ALTER TABLE: 14 new columns on intake.email_messages |
+| `007_auth_tables_documentation.sql` | Documents existing public.tbl_users + public.tbl_user_roles (CREATE IF NOT EXISTS) |
 
 ### Pydantic Models (all in src/models/)
 | File | Models |
 |------|--------|
 | `email.py` | EmailAttachment, EmailMessage, ParsedEmailPayload |
 | `query.py` | QuerySubmission, UnifiedQueryPayload |
-| `vendor.py` | VendorTier (enum), VendorMatch, VendorProfile |
+| `vendor.py` | VendorTier (enum), VendorMatch, VendorProfile, VendorAccountData, VendorUpdateRequest, VendorUpdateResult |
+| `auth.py` | UserRecord, UserRoleRecord, LoginRequest, LoginResponse, TokenPayload |
 | `workflow.py` | Status, UrgencyLevel, Sentiment, QuerySource, QueryType, Priority (enums), AnalysisResult, WorkflowState, CaseExecution |
 | `ticket.py` | TicketRecord, TicketLink, RoutingDecision |
 | `communication.py` | DraftResponse, DraftEmailPackage, ValidationReport |
@@ -1475,6 +1646,10 @@ real Resolution Agent and Communication Drafting Agent.
 | `tests/unit/test_email_intake.py` | ~11 | Email pipeline + thread correlation |
 | `tests/unit/test_portal_submission.py` | ~7 | Portal pipeline, dedup, graceful Redis |
 | `tests/unit/test_db_connection.py` | ~16 | SSH tunnel, engine lifecycle, health |
+| `tests/unit/test_auth_models.py` | 11 | Auth Pydantic models (UserRecord, LoginRequest, TokenPayload, etc.) |
+| `tests/unit/test_auth_service.py` | 13 | JWT create/validate/blacklist/refresh, authenticate_user mocked |
+| `tests/unit/test_auth_middleware.py` | 10 | _should_skip_auth for all skip/non-skip paths |
+| `tests/unit/test_vendor_crud.py` | 8 | VendorAccountData, VendorUpdateRequest, VendorUpdateResult |
 | `tests/integration/test_email_intake_e2e.py` | ~10 | Full E2E with moto AWS + webhook endpoint |
 
 ---
@@ -1514,3 +1689,7 @@ These architecture doc components have zero code (only empty `__init__.py` files
 | Admin Route | `src/api/routes/admin.py` | Phase 7 |
 | Resolution Prompt | `prompts/resolution/v1.jinja` | Phase 4 |
 | Communication Prompts | `prompts/communication_drafting/` | Phase 4 |
+
+
+
+

@@ -396,6 +396,202 @@ class SalesforceAdapter:
             "Category__c": account.get("Category__c"),
         }
 
+    # --- Standard Account Methods (merged from local_vqm) ---
+    # The methods below query the Salesforce STANDARD Account object,
+    # NOT the custom Vendor_Account__c object used by methods above.
+    # Both coexist because they serve different purposes:
+    #   - Vendor_Account__c: used by the AI pipeline for vendor resolution
+    #   - Account: used by the portal vendor management UI
+
+    def get_all_active_vendors(
+        self,
+        *,
+        correlation_id: str | None = None,
+    ) -> list[dict]:
+        """Get all active vendors from the Salesforce STANDARD Account object.
+
+        This queries the standard Account object (NOT custom
+        Vendor_Account__c). Used by GET /vendors for the portal
+        vendor management table.
+
+        SOQL: SELECT Id, Name, Vendor_ID__c, Website, Vendor_Tier__c,
+                     Category__c, Payment_Terms__c, AnnualRevenue,
+                     SLA_Response_Hours__c, SLA_Resolution_Days__c,
+                     Vendor_Status__c, Onboarded_Date__c,
+                     BillingCity, BillingState, BillingCountry
+              FROM Account
+              WHERE Vendor_Status__c = 'Active'
+
+        Args:
+            correlation_id: Tracing ID for log correlation.
+
+        Returns:
+            List of dicts with Account fields, lowercase keys.
+
+        Raises:
+            SalesforceAdapterError: If the SOQL query fails.
+        """
+        sf = self.connect()
+
+        soql = (
+            "SELECT Id, Name, Vendor_ID__c, Website, Vendor_Tier__c, "
+            "Category__c, Payment_Terms__c, AnnualRevenue, "
+            "SLA_Response_Hours__c, SLA_Resolution_Days__c, "
+            "Vendor_Status__c, Onboarded_Date__c, "
+            "BillingCity, BillingState, BillingCountry "
+            "FROM Account "
+            "WHERE Vendor_Status__c = 'Active'"
+        )
+
+        logger.info(
+            "Salesforce SOQL: get_all_active_vendors (standard Account)",
+            extra={
+                "tool": "salesforce",
+                "correlation_id": correlation_id,
+            },
+        )
+
+        try:
+            result = sf.query(soql)
+        except SalesforceError as exc:
+            logger.error(
+                "Salesforce query failed: get_all_active_vendors",
+                extra={
+                    "error": str(exc),
+                    "correlation_id": correlation_id,
+                },
+            )
+            raise SalesforceAdapterError(
+                f"SOQL query failed for active vendors: {exc}"
+            ) from exc
+
+        records = result.get("records", [])
+        logger.info(
+            "Active vendors retrieved from standard Account",
+            extra={
+                "result_count": len(records),
+                "correlation_id": correlation_id,
+            },
+        )
+
+        # Normalize to lowercase keys for consistent API response
+        cleaned = []
+        for record in records:
+            cleaned.append({
+                "id": record.get("Id"),
+                "name": record.get("Name"),
+                "vendor_id": record.get("Vendor_ID__c"),
+                "website": record.get("Website"),
+                "vendor_tier": record.get("Vendor_Tier__c"),
+                "category": record.get("Category__c"),
+                "payment_terms": record.get("Payment_Terms__c"),
+                "annual_revenue": record.get("AnnualRevenue"),
+                "sla_response_hours": record.get("SLA_Response_Hours__c"),
+                "sla_resolution_days": record.get("SLA_Resolution_Days__c"),
+                "vendor_status": record.get("Vendor_Status__c"),
+                "onboarded_date": record.get("Onboarded_Date__c"),
+                "billing_city": record.get("BillingCity"),
+                "billing_state": record.get("BillingState"),
+                "billing_country": record.get("BillingCountry"),
+            })
+        return cleaned
+
+    def update_vendor_account(
+        self,
+        vendor_id_field: str,
+        update_data: dict,
+        *,
+        correlation_id: str | None = None,
+    ) -> dict:
+        """Update a vendor record in the Salesforce STANDARD Account object.
+
+        Finds the Account by its Vendor_ID__c custom field, then
+        applies the provided field updates.
+
+        This queries the standard Account object (NOT custom
+        Vendor_Account__c). Used by PUT /vendors/{vendor_id}.
+
+        Args:
+            vendor_id_field: The Vendor_ID__c value to look up.
+            update_data: Dict of Salesforce field names to new values.
+                Only fields in VENDOR_UPDATABLE_FIELDS are accepted.
+            correlation_id: Tracing ID for log correlation.
+
+        Returns:
+            Dict with success, vendor_id, updated_fields.
+
+        Raises:
+            SalesforceAdapterError: If the lookup or update fails.
+        """
+        sf = self.connect()
+
+        # Step 1: Find the Account record by Vendor_ID__c
+        safe_id = vendor_id_field.replace("'", "\\'")
+        soql = (
+            "SELECT Id, Name, Vendor_ID__c "
+            "FROM Account "
+            f"WHERE Vendor_ID__c = '{safe_id}' "
+            "LIMIT 1"
+        )
+
+        logger.info(
+            "Salesforce SOQL: find Account for update",
+            extra={
+                "tool": "salesforce",
+                "vendor_id": vendor_id_field,
+                "correlation_id": correlation_id,
+            },
+        )
+
+        try:
+            result = sf.query(soql)
+        except SalesforceError as exc:
+            raise SalesforceAdapterError(
+                f"SOQL query failed for Account lookup: {exc}"
+            ) from exc
+
+        records = result.get("records", [])
+        if not records:
+            raise SalesforceAdapterError(
+                f"No Account found with Vendor_ID__c = '{vendor_id_field}'"
+            )
+
+        record_id = records[0]["Id"]
+
+        # Step 2: Update the Account record
+        try:
+            sf.Account.update(record_id, update_data)
+        except SalesforceError as exc:
+            logger.error(
+                "Salesforce Account update failed",
+                extra={
+                    "vendor_id": vendor_id_field,
+                    "record_id": record_id,
+                    "error": str(exc),
+                    "correlation_id": correlation_id,
+                },
+            )
+            raise SalesforceAdapterError(
+                f"Account update failed for {vendor_id_field}: {exc}"
+            ) from exc
+
+        updated_fields = list(update_data.keys())
+        logger.info(
+            "Salesforce Account updated",
+            extra={
+                "vendor_id": vendor_id_field,
+                "record_id": record_id,
+                "updated_fields": updated_fields,
+                "correlation_id": correlation_id,
+            },
+        )
+
+        return {
+            "success": True,
+            "vendor_id": vendor_id_field,
+            "updated_fields": updated_fields,
+        }
+
     def find_account_by_name(
         self,
         name: str,

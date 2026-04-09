@@ -36,6 +36,13 @@ class AppSettings(BaseSettings):
     log_level: str = "DEBUG"
     correlation_id_header: str = "X-Correlation-ID"
 
+    # --- JWT Authentication ---
+    # Stable secret from .env — sessions survive restarts
+    jwt_secret_key: str = ""
+    jwt_algorithm: str = "HS256"
+    session_timeout_seconds: int = 1800  # 30 min JWT lifetime
+    token_refresh_threshold_seconds: int = 300  # refresh if <5 min left
+
     # --- Secrets Backend ---
     app_secrets_backend: str = "env"
 

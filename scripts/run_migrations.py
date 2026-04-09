@@ -90,7 +90,8 @@ async def main():
 
     tables = await conn.fetch(
         "SELECT table_schema, table_name FROM information_schema.tables "
-        "WHERE table_schema NOT IN ('pg_catalog', 'information_schema', 'public') "
+        "WHERE table_schema NOT IN ('pg_catalog', 'information_schema') "
+        "AND NOT (table_schema = 'public' AND table_name NOT LIKE 'tbl_%') "
         "ORDER BY table_schema, table_name"
     )
     if tables:

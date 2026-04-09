@@ -17,10 +17,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from config.settings import get_settings
+from src.api.middleware.auth_middleware import AuthMiddleware
 from src.api.routes.auth import router as auth_router
 from src.api.routes.dashboard import router as dashboard_router
 from src.api.routes.email_dashboard import router as email_dashboard_router
 from src.api.routes.queries import router as queries_router
+from src.api.routes.vendors import router as vendors_router
 from src.api.routes.webhooks import router as webhooks_router
 from src.cache.redis_client import check_redis_health, close_redis, init_redis
 from src.db.connection import (
@@ -170,7 +172,38 @@ app = FastAPI(
     description="Vendor Query Management System — Agentic AI Platform",
     version=settings.app_version,
     lifespan=lifespan,
+    swagger_ui_init_oauth={},
 )
+
+
+def custom_openapi():
+    """Add Bearer token Authorize button to Swagger UI."""
+    if app.openapi_schema:
+        return app.openapi_schema
+    from fastapi.openapi.utils import get_openapi
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+    # Add HTTP Bearer security scheme so Swagger shows the Authorize button
+    schema.setdefault("components", {})
+    schema["components"]["securitySchemes"] = {
+        "BearerAuth": {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "JWT",
+            "description": "Paste your JWT token (without 'Bearer ' prefix)",
+        }
+    }
+    # Apply it globally to all endpoints
+    schema["security"] = [{"BearerAuth": []}]
+    app.openapi_schema = schema
+    return schema
+
+
+app.openapi = custom_openapi  # type: ignore[method-assign]
 
 # --- CORS: Allow Angular dev server ---
 app.add_middleware(
@@ -179,6 +212,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# --- JWT Authentication Middleware ---
+# Runs after CORS (registered after = executes inside CORS).
+# Decodes JWT, sets request.state user context, handles token refresh.
+# Skips: /health, /auth/login, /docs, /openapi.json, /webhooks/
+app.add_middleware(AuthMiddleware)
 
 # --- Phase 2: Intake Routes ---
 app.include_router(queries_router)
@@ -190,6 +229,9 @@ app.include_router(dashboard_router)
 
 # --- Email Dashboard Routes ---
 app.include_router(email_dashboard_router)
+
+# --- Vendor Management Routes (merged from local_vqm) ---
+app.include_router(vendors_router)
 
 
 @app.get("/health")
