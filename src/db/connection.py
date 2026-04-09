@@ -79,6 +79,7 @@ def start_ssh_tunnel(
     logger.info(
         "SSH tunnel established",
         extra={
+            "tool": "postgresql",
             "ssh_host": ssh_host,
             "rds_host": rds_host,
             "local_bind": f"{local_host}:{local_port}",
@@ -126,7 +127,7 @@ async def init_db(
 
     logger.info(
         "Database connection pool initialized (via SSH tunnel)",
-        extra={"pool_min": pool_min, "pool_max": pool_max},
+        extra={"tool": "postgresql", "pool_min": pool_min, "pool_max": pool_max},
     )
     return _engine
 
@@ -145,7 +146,7 @@ async def close_db() -> None:
 
     if _engine is not None:
         await _engine.dispose()
-        logger.info("Database connection pool closed")
+        logger.info("Database connection pool closed", extra={"tool": "postgresql"})
         _engine = None
 
 
@@ -158,7 +159,7 @@ def stop_ssh_tunnel() -> None:
 
     if _ssh_tunnel is not None:
         _ssh_tunnel.stop()
-        logger.info("SSH tunnel closed")
+        logger.info("SSH tunnel closed", extra={"tool": "postgresql"})
         _ssh_tunnel = None
 
 
@@ -176,5 +177,5 @@ async def check_db_health() -> bool:
             await conn.execute(text("SELECT 1"))
         return True
     except Exception:
-        logger.warning("Database health check failed", exc_info=True)
+        logger.warning("Database health check failed", extra={"tool": "postgresql"}, exc_info=True)
         return False

@@ -1,7 +1,7 @@
 ```
 ================================================================================
      VQMS -- END-TO-END RUNTIME WALKTHROUGH
-     Phase 2 Complete | 128 Tests Passing | All Cloud Services Connected
+     Phase 3 Complete | AI Pipeline Built | LangGraph + Bedrock + pgvector
 ================================================================================
 ```
 
@@ -19,9 +19,10 @@ exist only as empty `__init__.py` files or are not yet coded say [STUB] or
   PART 0:  Application Startup .......................... [IMPLEMENTED]
   PART 1:  Email Entry Point (Steps E1 - E2) ........... [IMPLEMENTED]
   PART 2:  Portal Entry Point (Steps P1 - P6) .......... [IMPLEMENTED]
-  PART 3:  Both Paths Converge (SQS -> AI Pipeline) .... [IMPLEMENTED up to SQS enqueue]
-  PART 4:  Query Analysis -- LLM Call #1 (Step 8) ...... [NOT BUILT -- Phase 3]
-  PART 5:  Routing + KB Search (Step 9) ................ [NOT BUILT -- Phase 3]
+  PART 3:  SQS Consumer + Context Loading (Step 7) ..... [IMPLEMENTED]
+  PART 4:  Query Analysis -- LLM Call #1 (Step 8) ...... [IMPLEMENTED]
+  PART 5:  Routing + KB Search (Step 9) ................ [IMPLEMENTED]
+  PART 5B: Path Decision + Stubs (A/B/C) ............... [IMPLEMENTED — stubs for Phase 4]
   PART 6:  Path A -- AI-Resolved (Steps 10A-12A) ....... [NOT BUILT -- Phase 4]
   PART 7:  Path B -- Human-Team-Resolved ............... [NOT BUILT -- Phase 4]
   PART 8:  Path C -- Low-Confidence Review ............. [NOT BUILT -- Phase 5]
@@ -736,10 +737,11 @@ Backend routes supporting the portal:
 
 ---
 
-## PART 3: BOTH PATHS CONVERGE
+## PART 3: SQS CONSUMER + CONTEXT LOADING (Step 7)
 
 Both email and portal paths produce a `UnifiedQueryPayload` on SQS.
-The message format is identical regardless of entry point:
+The SQS consumer polls the queue, deserializes the message, builds
+a LangGraph PipelineState, and runs the full AI pipeline.
 
 ```
   +=====================================================+
@@ -762,10 +764,105 @@ The message format is identical regardless of entry point:
   | received_at:      "2026-04-07T05:15:37+00:00"       |
   +=====================================================+
         |
-        | SQS consumer reads this message
-        | (NOT YET BUILT — Phase 3)
         v
-  [Phase 3: LangGraph Orchestrator consumes from SQS]
+
+═══════════════════════════════════════════════════════════════
+ STEP 7.0: SQS Consumer Polls Message
+═══════════════════════════════════════════════════════════════
+
+        +=============================================+
+        | start_consumer(shutdown_event)              |
+        | File: src/orchestration/sqs_consumer.py     |
+        | Status: [IMPLEMENTED]                       |
+        +=============================================+
+        |                                             |
+        | What happens:                               |
+        |  1. Long-poll SQS (WaitTimeSeconds=20,      |
+        |     VisibilityTimeout=300)                   |
+        |  2. Uses raw boto3 receive_message           |
+        |     (NOT the existing consume() which        |
+        |      auto-deletes — we need delete-on-       |
+        |      success-only for reliability)           |
+        |  3. Deserialize JSON → dict                  |
+        |  4. Build PipelineState TypedDict with       |
+        |     12 fields (payload, IDs, nulls)          |
+        |  5. Call graph.ainvoke(initial_state)         |
+        |  6. On success: delete_message               |
+        |  7. On failure: log error, leave message     |
+        |     for retry/DLQ (3 retries max)            |
+        |                                              |
+        | Also started as background task in:          |
+        |   main.py -> lifespan() -> asyncio.create_task |
+        +=============================================+
+               |
+               v
+
+═══════════════════════════════════════════════════════════════
+ STEP 7.1-7.4: Context Loading Node
+═══════════════════════════════════════════════════════════════
+
+        +=============================================+
+        | context_loading_node(state)                 |
+        | File: src/orchestration/nodes/              |
+        |       context_loading.py                    |
+        | Status: [IMPLEMENTED]                       |
+        +=============================================+
+        |                                             |
+        | Input: PipelineState (payload + IDs)        |
+        |                                             |
+        | What happens inside:                        |
+        |  7.1 Update workflow.case_execution          |
+        |      status → "analyzing"                    |
+        |      via _update_case_status()               |
+        |                                              |
+        |  7.2 Cache workflow state in Redis            |
+        |      Key: vqms:workflow:<execution_id>        |
+        |      TTL: 24 hours                            |
+        |      via _cache_workflow_state()              |
+        |                                              |
+        |  7.3 Load vendor profile                     |
+        |      File: src/services/memory_context.py    |
+        |      → load_vendor_profile(vendor_id,        |
+        |          sender_email, correlation_id)        |
+        |      First checks Redis cache                |
+        |        (vqms:vendor:<id>, 1h TTL)             |
+        |      On miss → Salesforce adapter:            |
+        |        find_account_by_vendor_id()             |
+        |        find_account_by_id()                    |
+        |        find_contact_by_email()                 |
+        |      Caches result in Redis for 1 hour        |
+        |      Returns: VendorProfile | None            |
+        |                                              |
+        |  7.4 Load vendor history                     |
+        |      File: src/services/memory_context.py    |
+        |      → load_vendor_history(vendor_id,        |
+        |          correlation_id)                      |
+        |      SQL: SELECT summary, resolution_path,    |
+        |        metadata FROM memory.episodic_memory   |
+        |        WHERE vendor_id = :id                  |
+        |        ORDER BY created_at DESC LIMIT 10      |
+        |      Returns: list[dict]                      |
+        |                                              |
+        |  7.5 Initialize Budget from settings          |
+        |      (max_tokens_in, max_tokens_out,          |
+        |       currency_limit_usd from .env)            |
+        |                                              |
+        |  7.6 Write audit log + publish event          |
+        |      EventBridge: AnalysisStarted              |
+        |      audit.action_log: context_loaded          |
+        |                                              |
+        | Storage writes:                               |
+        |   PostgreSQL: workflow.case_execution (status) |
+        |   Redis: vqms:workflow:<exec_id> (24h TTL)     |
+        |   Redis: vqms:vendor:<id> (1h TTL, on miss)    |
+        |   EventBridge: AnalysisStarted event           |
+        |   audit.action_log: context_loaded             |
+        |                                              |
+        | Output: PipelineState with vendor_profile,    |
+        |   vendor_history, budget populated             |
+        +=============================================+
+               |
+               v
 ```
 
 ---
@@ -773,30 +870,110 @@ The message format is identical regardless of entry point:
 ## PART 4: QUERY ANALYSIS -- LLM CALL #1 (Step 8)
 
 ```
-  +=====================================================+
-  | [NOT BUILT -- Phase 3]                              |
-  |                                                     |
-  | File: src/agents/query_analysis.py                  |
-  | Current state: src/agents/__init__.py is empty      |
-  |                                                     |
-  | What will happen:                                   |
-  |  1. LangGraph orchestrator consumes SQS message     |
-  |  2. Loads context: vendor profile, episodic memory  |
-  |  3. Query Analysis Agent calls Bedrock Claude 3.5   |
-  |  4. Produces AnalysisResult:                        |
-  |     intent_classification, extracted_entities,       |
-  |     urgency_level, sentiment, confidence_score,     |
-  |     multi_issue_detected, suggested_category        |
-  |  5. Decision: confidence >= 0.85 -> Step 9          |
-  |               confidence <  0.85 -> Path C          |
-  |                                                     |
-  | Pydantic model ready: src/models/workflow.py        |
-  |   -> AnalysisResult [IMPLEMENTED]                   |
-  | Bedrock adapter: src/adapters/bedrock.py            |
-  |   -> [NOT BUILT]                                    |
-  | Prompt template: prompts/query_analysis/v1.jinja    |
-  |   -> [NOT BUILT]                                    |
-  +=====================================================+
+═══════════════════════════════════════════════════════════════
+ STEP 8: Query Analysis Agent (LLM Call #1)
+═══════════════════════════════════════════════════════════════
+
+        +=============================================+
+        | query_analysis_node(state)                  |
+        | File: src/orchestration/nodes/              |
+        |       query_analysis_node.py                |
+        | Status: [IMPLEMENTED]                       |
+        +=============================================+
+        |                                             |
+        | Input: PipelineState with payload,          |
+        |   vendor_profile, vendor_history, budget    |
+        |                                             |
+        | What happens inside:                        |
+        |  1. Create QueryAnalysisAgent instance       |
+        |     File: src/agents/query_analysis.py       |
+        |     Inherits: src/agents/abc_agent.py        |
+        |                                              |
+        |  2. Agent renders Jinja2 prompt template     |
+        |     File: prompts/query_analysis/v1.jinja    |
+        |     Context: query (subject, description,    |
+        |       query_type, reference_number),          |
+        |       vendor_profile, vendor_history          |
+        |                                              |
+        |  3. Agent calls LLM via factory (auto fallback)|
+        |     File: src/llm/factory.py                 |
+        |     → llm_complete(prompt, system_prompt,    |
+        |         temperature=0.1, max_tokens=4096)    |
+        |     Provider chain: Bedrock → OpenAI         |
+        |       (configurable via LLM_PROVIDER env)    |
+        |     Tenacity retry per provider              |
+        |     Returns: {text, tokens_in, tokens_out,    |
+        |       cost_usd, latency_ms, model, provider,  |
+        |       was_fallback}                           |
+        |                                              |
+        |  4. Parse JSON response                      |
+        |     BaseAgent.parse_json_response()           |
+        |     Strips markdown fences (```json ... ```)  |
+        |     On parse failure: retry once with         |
+        |       "fix JSON" prompt                       |
+        |     On second failure: return AnalysisResult  |
+        |       with confidence_score=0.0               |
+        |       (triggers Path C)                       |
+        |                                              |
+        |  5. Build AnalysisResult                     |
+        |     File: src/models/workflow.py              |
+        |     Fields: intent_classification,            |
+        |       extracted_entities, urgency_level,      |
+        |       sentiment, confidence_score,            |
+        |       multi_issue_detected,                   |
+        |       suggested_category, raw_llm_output,     |
+        |       tokens_in, tokens_out, cost_usd,        |
+        |       latency_ms                              |
+        |                                              |
+        |  6. Persist analysis result                   |
+        |     PostgreSQL: UPDATE case_execution          |
+        |       SET analysis_result = <JSONB>            |
+        |     Redis: update workflow state               |
+        |       → status = "analysis_complete"           |
+        |     S3: upload prompt snapshot to              |
+        |       vqms-audit-artifacts-prod                |
+        |     EventBridge: AnalysisCompleted event       |
+        |     audit.action_log: analysis_completed       |
+        |                                              |
+        | Storage writes:                               |
+        |   PostgreSQL: case_execution.analysis_result   |
+        |   Redis: vqms:workflow:<exec_id>               |
+        |   S3: audit-artifacts/prompts/<exec_id>.json   |
+        |   EventBridge: AnalysisCompleted               |
+        |   audit.action_log: analysis_completed         |
+        |                                              |
+        | Output: PipelineState with analysis_result    |
+        +=============================================+
+               |
+               v
+
+═══════════════════════════════════════════════════════════════
+ STEP 8 DECISION: Confidence Check
+═══════════════════════════════════════════════════════════════
+
+        +=============================================+
+        | check_confidence(state)                     |
+        | File: src/orchestration/nodes/              |
+        |       confidence_check.py                   |
+        | Status: [IMPLEMENTED]                       |
+        +=============================================+
+        |                                             |
+        | Conditional edge function:                  |
+        |   confidence >= 0.85 → returns "pass"       |
+        |     → continues to Step 9                    |
+        |   confidence <  0.85 → returns "fail"       |
+        |     → routes to Path C stub                  |
+        |                                              |
+        | Threshold from: settings.agent_confidence_   |
+        |   threshold (default 0.85)                   |
+        +=============================================+
+               |
+          +----+----+
+          |         |
+     "pass"        "fail"
+          |         |
+          v         v
+     [Step 9]   [Path C Stub]
 ```
 
 ---
@@ -804,32 +981,197 @@ The message format is identical regardless of entry point:
 ## PART 5: ROUTING + KB SEARCH (Step 9)
 
 ```
-  +=====================================================+
-  | [NOT BUILT -- Phase 3]                              |
-  |                                                     |
-  | Routing Service:                                    |
-  |   File: src/services/routing.py                     |
-  |   Current state: file does not exist                |
-  |   Pydantic model ready: src/models/ticket.py        |
-  |     -> RoutingDecision [IMPLEMENTED]                |
-  |                                                     |
-  | KB Search Service:                                  |
-  |   File: src/services/kb_search.py                   |
-  |   Current state: file does not exist                |
-  |   pgvector schema ready: migration 003              |
-  |     -> memory.embedding_index [SCHEMA BUILT]        |
-  |                                                     |
-  | What will happen (parallel execution):              |
-  |  A. Routing: deterministic rules engine             |
-  |     Input: AnalysisResult + VendorMatch             |
-  |     Output: RoutingDecision (team, SLA, path)       |
-  |  B. KB Search: embed query -> cosine similarity     |
-  |     Input: query text                               |
-  |     Output: ranked KB article matches               |
-  |                                                     |
-  | Decision: KB match >= 80% + facts -> Path A         |
-  |           Otherwise                -> Path B        |
-  +=====================================================+
+═══════════════════════════════════════════════════════════════
+ STEP 9: Routing + KB Search (Parallel)
+═══════════════════════════════════════════════════════════════
+
+        +=============================================+
+        | routing_and_kb_search_node(state)           |
+        | File: src/orchestration/nodes/              |
+        |       routing_and_kb_search.py              |
+        | Status: [IMPLEMENTED]                       |
+        +=============================================+
+        |                                             |
+        | Input: PipelineState with analysis_result,  |
+        |   vendor_profile, payload                   |
+        |                                             |
+        | Runs TWO operations in parallel via         |
+        | asyncio.gather():                           |
+        |                                             |
+        | 9A. Routing Service (deterministic rules)   |
+        |   File: src/services/routing.py             |
+        |   → route_query(analysis, vendor_profile,   |
+        |       execution_id, correlation_id)          |
+        |                                              |
+        |   SLA Matrix (16 combinations):              |
+        |     PLATINUM: CRITICAL=1h, HIGH=2h,          |
+        |               MEDIUM=4h,  LOW=8h             |
+        |     GOLD:     CRITICAL=2h, HIGH=4h,          |
+        |               MEDIUM=8h,  LOW=16h            |
+        |     SILVER:   CRITICAL=4h, HIGH=8h,          |
+        |               MEDIUM=16h, LOW=24h            |
+        |     STANDARD: CRITICAL=4h, HIGH=12h,         |
+        |               MEDIUM=24h, LOW=48h            |
+        |                                              |
+        |   Team Assignment by category:               |
+        |     invoice_payment → Finance Team            |
+        |     purchase_order  → Procurement Team        |
+        |     contract        → Contract Team           |
+        |     general         → General Support         |
+        |                                              |
+        |   Checks BLOCK_AUTOMATION risk flag           |
+        |   Writes to workflow.routing_decision table    |
+        |   Returns: RoutingDecision                    |
+        |                                              |
+        | 9B. KB Search Service (embedding + pgvector)  |
+        |   File: src/services/kb_search.py            |
+        |   → search_kb(query_text, category,          |
+        |       correlation_id)                         |
+        |                                              |
+        |   1. Embed query via llm_embed() factory       |
+        |      (Bedrock Titan v2 or OpenAI, 1536 dims)  |
+        |      Auto fallback if primary fails           |
+        |   2. Format vector as pgvector string          |
+        |      "[0.1,0.2,...]"                          |
+        |   3. SQL cosine similarity search:             |
+        |      SELECT record_id, source_document,        |
+        |        chunk_text, metadata,                   |
+        |        1-(embedding <=> :vec::vector)          |
+        |        AS similarity                           |
+        |      FROM memory.embedding_index               |
+        |      WHERE metadata->>'category' = :cat        |
+        |      ORDER BY embedding <=> :vec::vector       |
+        |      LIMIT 5                                   |
+        |   4. Filter by threshold (0.80)                |
+        |   5. has_specific_facts heuristic:             |
+        |      7 regex patterns for dollar amounts,      |
+        |      dates, Net terms, steps, timeframes       |
+        |   Returns: KBSearchResponse                    |
+        |     (results, top_score, search_latency_ms)    |
+        |                                              |
+        | Storage writes:                               |
+        |   PostgreSQL: workflow.routing_decision         |
+        |                                              |
+        | Output: PipelineState with routing_decision    |
+        |   and kb_search_response                       |
+        +=============================================+
+               |
+               v
+
+═══════════════════════════════════════════════════════════════
+ STEP 9 DECISION: Path A vs Path B
+═══════════════════════════════════════════════════════════════
+
+        +=============================================+
+        | decide_path(state)                          |
+        | File: src/orchestration/nodes/              |
+        |       path_decision.py                      |
+        | Status: [IMPLEMENTED]                       |
+        +=============================================+
+        |                                             |
+        | Conditional edge function:                  |
+        |                                             |
+        |   Path A (AI-Resolved) requires ALL:        |
+        |     - KB top_score >= threshold (0.80)       |
+        |     - At least 1 result has_specific_facts   |
+        |     - Automation NOT blocked                  |
+        |       (no BLOCK_AUTOMATION risk flag)         |
+        |                                              |
+        |   Path B (Human-Team) if ANY fails           |
+        |                                              |
+        | Returns: "path_a" | "path_b"                 |
+        +=============================================+
+               |
+          +----+----+
+          |         |
+     "path_a"   "path_b"
+          |         |
+          v         v
+     [Path A]   [Path B]
+       Stub       Stub
+```
+
+---
+
+## PART 5B: PATH STUBS (A/B/C)
+
+All three paths currently end at stubs that update status and
+publish events. Phase 4 will replace Path A and B stubs with
+real Resolution Agent and Communication Drafting Agent.
+
+```
+        +=============================================+
+        | path_a_stub(state)                          |
+        | path_b_stub(state)                          |
+        | path_c_stub(state)                          |
+        | File: src/orchestration/nodes/path_stubs.py |
+        | Status: [IMPLEMENTED — stubs for Phase 4]   |
+        +=============================================+
+        |                                             |
+        | Each stub does:                             |
+        |  1. Update case_execution status             |
+        |     Path A: "resolving_ai"                   |
+        |     Path B: "awaiting_team_resolution"       |
+        |     Path C: "awaiting_human_review"          |
+        |  2. Update Redis workflow state               |
+        |  3. Publish EventBridge event                 |
+        |     PathASelected / PathBSelected /            |
+        |     HumanReviewRequired                       |
+        |  4. Write audit log                           |
+        |  5. Set state["selected_path"] = "A"/"B"/"C"  |
+        |                                              |
+        | Storage writes:                               |
+        |   PostgreSQL: case_execution (status)          |
+        |   Redis: vqms:workflow:<exec_id>               |
+        |   EventBridge: path event                      |
+        |   audit.action_log: path_selected              |
+        |                                              |
+        | Output: PipelineState with selected_path      |
+        |   → graph reaches END                          |
+        +=============================================+
+```
+
+---
+
+## LANGGRAPH PIPELINE DIAGRAM
+
+```
+  +==================+     +==================+     +=================+
+  | context_loading  | --> | query_analysis   | --> | confidence_check|
+  | (Step 7)         |     | (Step 8)         |     | (conditional)   |
+  +==================+     +==================+     +=================+
+                                                          |
+                                              +-----------+-----------+
+                                              |                       |
+                                           "pass"                  "fail"
+                                              |                       |
+                                              v                       v
+                                    +==================+    +================+
+                                    | routing_and_kb   |    | path_c_stub    |
+                                    | _search (Step 9) |    | (Path C)       |
+                                    +==================+    +================+
+                                              |                       |
+                                              v                       v
+                                    +=================+             END
+                                    | path_decision   |
+                                    | (conditional)   |
+                                    +=================+
+                                              |
+                                    +---------+---------+
+                                    |                   |
+                                 "path_a"            "path_b"
+                                    |                   |
+                                    v                   v
+                              +===========+      +===========+
+                              | path_a    |      | path_b    |
+                              | _stub     |      | _stub     |
+                              +===========+      +===========+
+                                    |                   |
+                                    v                   v
+                                   END                 END
+
+  File: src/orchestration/graph.py -> build_pipeline_graph()
+  State: src/orchestration/graph.py -> PipelineState (TypedDict, 12 fields)
 ```
 
 ---
@@ -1001,6 +1343,19 @@ The message format is identical regardless of entry point:
 | `src/services/portal_submission.py` | `submit_portal_query()` | Full 7-step portal pipeline |
 | `src/services/portal_submission.py` | `_check_idempotency()` | Redis dedup for portal |
 | `src/services/portal_submission.py` | `_store_case_execution()` | Write to workflow.case_execution |
+| `src/services/memory_context.py` | `load_vendor_profile()` | Redis cache → Salesforce → cache result |
+| `src/services/memory_context.py` | `load_vendor_history()` | SELECT from memory.episodic_memory LIMIT 10 |
+| `src/services/routing.py` | `route_query()` | SLA matrix + team assignment + automation check |
+| `src/services/routing.py` | `calculate_sla_hours()` | 16-cell SLA matrix lookup |
+| `src/services/routing.py` | `assign_team()` | Category → team mapping |
+| `src/services/routing.py` | `check_automation_blocked()` | BLOCK_AUTOMATION risk flag check |
+| `src/services/kb_search.py` | `search_kb()` | Embed query → pgvector cosine similarity search |
+
+### Agents
+| File | Function | What it does |
+|------|----------|-------------|
+| `src/agents/abc_agent.py` | `BaseAgent` | Jinja2 template loading, LLM calls, JSON parsing, budget tracking |
+| `src/agents/query_analysis.py` | `QueryAnalysisAgent.analyze_query()` | LLM Call #1: intent, entities, urgency, confidence |
 
 ### Adapters
 | File | Function | What it does |
@@ -1014,6 +1369,25 @@ The message format is identical regardless of entry point:
 | `src/adapters/graph_api.py` | `_extract_recipient_emails()` | Parse to/cc from Graph |
 | `src/adapters/salesforce.py` | `SalesforceAdapter` | Real Salesforce SOQL queries (Vendor_Contact__c, Vendor_Account__c) |
 | `src/services/vendor_resolution.py` | `resolve_vendor()` | 3-step vendor match via real Salesforce custom objects |
+| `src/adapters/bedrock.py` | `invoke_llm()` | Claude Sonnet 3.5 via Bedrock Messages API (with retry) |
+| `src/adapters/bedrock.py` | `embed_text()` | Titan Embed v2 → 1536-dim vector |
+| `src/adapters/bedrock.py` | `BedrockProvider` | Protocol-compatible wrapper for factory |
+| `src/adapters/openai_provider.py` | `OpenAIProvider` | GPT-4o + text-embedding-3-small (fallback provider) |
+| `src/llm/protocol.py` | `LLMProvider` | Protocol interface for all LLM providers |
+| `src/llm/factory.py` | `llm_complete()` | LLM calls with automatic provider fallback |
+| `src/llm/factory.py` | `llm_embed()` | Embedding calls with automatic provider fallback |
+
+### Orchestration (Phase 3)
+| File | Function | What it does |
+|------|----------|-------------|
+| `src/orchestration/graph.py` | `build_pipeline_graph()` | LangGraph StateGraph with conditional edges |
+| `src/orchestration/sqs_consumer.py` | `start_consumer()` | SQS long-poll → LangGraph pipeline → delete on success |
+| `src/orchestration/nodes/context_loading.py` | `context_loading_node()` | Step 7: status, Redis, vendor profile, history, budget |
+| `src/orchestration/nodes/query_analysis_node.py` | `query_analysis_node()` | Step 8: wraps QueryAnalysisAgent, persists results |
+| `src/orchestration/nodes/confidence_check.py` | `check_confidence()` | Conditional: >= 0.85 pass, < 0.85 fail |
+| `src/orchestration/nodes/routing_and_kb_search.py` | `routing_and_kb_search_node()` | Step 9: parallel routing + KB search |
+| `src/orchestration/nodes/path_decision.py` | `decide_path()` | Conditional: Path A (KB+facts) vs Path B |
+| `src/orchestration/nodes/path_stubs.py` | `path_a_stub()` / `path_b_stub()` / `path_c_stub()` | Status update stubs for Phase 4 |
 
 ### Infrastructure
 | File | Function | What it does |
@@ -1060,18 +1434,38 @@ The message format is identical regardless of entry point:
 | `budget.py` | Budget (with is_within_budget, remaining_* properties) |
 | `triage.py` | ReviewStatus, TriagePackage |
 | `messages.py` | ToolCall, AgentMessage |
+| `kb.py` | KBSearchResult, KBSearchResponse |
+
+### Prompt Templates
+| File | What it does |
+|------|-------------|
+| `prompts/query_analysis/v1.jinja` | Query Analysis Agent prompt — intent, entities, urgency, confidence |
+
+### KB Seed Data
+| File | Category |
+|------|----------|
+| `data/knowledge_base/invoice_payment_process.md` | billing |
+| `data/knowledge_base/overdue_invoice_policy.md` | billing |
+| `data/knowledge_base/ap_processing_timeline.md` | billing |
+| `data/knowledge_base/po_mismatch_resolution.md` | billing |
+| `data/knowledge_base/general_vendor_inquiry.md` | general |
+| `src/db/seeds/seed_kb_articles.py` | Reads .md, chunks, embeds via Titan, inserts into pgvector |
 
 ### Scripts
 | File | What it does |
 |------|-------------|
 | `scripts/run_email_intake.py` | Run full email pipeline against real cloud services |
+| `scripts/run_pipeline.py` | Run AI pipeline (--consumer-only / --server-only) |
 | `scripts/run_migrations.py` | Execute SQL migrations on RDS via SSH tunnel |
 | `scripts/check_db.py` | Diagnose PostgreSQL connectivity, list DBs/tables |
 | `scripts/check_aws.py` | Check S3, SQS, EventBridge connectivity |
 | `scripts/check_graph_api.py` | Check Graph API auth, mailbox, permissions |
 | `tests/manual/test_salesforce_connection.py` | Test Salesforce connection, query Contacts/Accounts |
+| `tests/manual/test_bedrock_connection.py` | Test Bedrock LLM + embedding calls |
+| `tests/manual/test_kb_search.py` | Test KB search after seeding articles |
+| `tests/manual/test_phase3_pipeline.py` | Full end-to-end Phase 3 pipeline test |
 
-### Tests (128 passing)
+### Tests
 | File | Tests | What they cover |
 |------|-------|----------------|
 | `tests/unit/test_models.py` | ~80 | All Pydantic models and enums |
@@ -1097,36 +1491,26 @@ These architecture doc components have zero code (only empty `__init__.py` files
 
 | Component | Target File | Phase |
 |-----------|-------------|-------|
-| LangGraph Orchestrator | `src/orchestration/graph.py` | Phase 3 |
-| Orchestration Router | `src/orchestration/router.py` | Phase 3 |
-| Orchestration Manager | `src/orchestration/manager.py` | Phase 3 |
+| Orchestration Router | `src/orchestration/router.py` | Phase 4+ |
+| Orchestration Manager | `src/orchestration/manager.py` | Phase 4+ |
 | Step Functions Integration | `src/orchestration/step_functions.py` | Phase 5 |
-| Query Analysis Agent | `src/agents/query_analysis.py` | Phase 3 |
 | Resolution Agent | `src/agents/resolution.py` | Phase 4 |
 | Communication Drafting Agent | `src/agents/communication_drafting.py` | Phase 4 |
-| Orchestration Agent | `src/agents/orchestration.py` | Phase 3 |
-| Base Agent Class | `src/agents/abc_agent.py` | Phase 3 |
+| Orchestration Agent | `src/agents/orchestration.py` | Phase 4+ |
 | Quality & Governance Gate | `src/gates/quality_governance.py` | Phase 4 |
 | SLA Alerting Service | `src/monitoring/sla_alerting.py` | Phase 6 |
-| Bedrock Adapter (LLM) | `src/adapters/bedrock.py` | Phase 3 |
 | Comprehend Adapter (PII) | `src/adapters/comprehend.py` | Phase 4 |
 | ServiceNow Adapter | `src/adapters/servicenow.py` | Phase 4 |
-| Vendor Resolution Service | `src/services/vendor_resolution.py` | Phase 2 (IMPLEMENTED — real Salesforce) |
 | Ticket Ops Service | `src/services/ticket_ops.py` | Phase 4 |
-| Routing Service | `src/services/routing.py` | Phase 3 |
-| KB Search Service | `src/services/kb_search.py` | Phase 3 |
-| Memory Context Service | `src/services/memory_context.py` | Phase 3 |
-| LLM Factory | `src/llm/factory.py` | Phase 3 |
-| LLM Utils (RAG chunking) | `src/llm/utils.py` | Phase 3 |
-| LLM Security Helpers | `src/llm/security_helpers.py` | Phase 3 |
-| Short-term Memory (Redis) | `src/memory/short_term.py` | Phase 3 |
-| Long-term Memory (pgvector) | `src/memory/long_term.py` | Phase 3 |
-| Custom Agent Tools | `src/tools/custom_tools.py` | Phase 3 |
+| LLM Factory | `src/llm/factory.py` | **Built** — multi-provider fallback (Bedrock → OpenAI) |
+| LLM Utils (RAG chunking) | `src/llm/utils.py` | Phase 4+ |
+| LLM Security Helpers | `src/llm/security_helpers.py` | Phase 4+ |
+| Short-term Memory (Redis) | `src/memory/short_term.py` | Phase 4+ |
+| Long-term Memory (pgvector) | `src/memory/long_term.py` | Phase 4+ |
+| Custom Agent Tools | `src/tools/custom_tools.py` | Phase 4+ |
 | Evaluation Matrix | `src/evaluation/matrix.py` | Phase 8 |
 | LLM-as-Judge Eval | `src/evaluation/eval.py` | Phase 8 |
-| Dashboard Route | `src/api/routes/dashboard.py` | IMPLEMENTED — GET /dashboard/kpis, GET /queries, GET /queries/{id} |
-| Auth Route | `src/api/routes/auth.py` | IMPLEMENTED — fake POST /auth/login for dev |
 | Triage Route | `src/api/routes/triage.py` | Phase 5 |
 | Admin Route | `src/api/routes/admin.py` | Phase 7 |
-| Prompt Templates | `prompts/` directory | Phase 3 |
-| Frontend Portal (Angular) | `frontend/` directory | IMPLEMENTED — full P1-P6 wizard flow, zero styling |
+| Resolution Prompt | `prompts/resolution/v1.jinja` | Phase 4 |
+| Communication Prompts | `prompts/communication_drafting/` | Phase 4 |

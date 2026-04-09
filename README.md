@@ -8,31 +8,35 @@ Vendors email vendor-support@company.com or submit through the VQMS portal. The 
 
 ## Current Status
 
-**Phase 2 complete -- Intake Services (Email + Portal)**
+**Phase 3 complete -- AI Pipeline Core (Steps 7-9)**
 
-Both entry points are built and tested end-to-end with real cloud services:
+The LangGraph AI pipeline is built: SQS consumer, context loading, query analysis (Bedrock Claude Sonnet 3.5), routing rules engine, KB search (Titan Embed v2 + pgvector), and three-path branching (A/B/C).
 
 | Component | Status | Details |
 |-----------|--------|---------|
-| Pydantic models (22 models, 7 enums) | Built | All data contracts validated with 128 tests |
+| Pydantic models (23 models, 7 enums) | Built | All data contracts validated |
 | PostgreSQL schema (5 schemas, 11+ tables) | Built | 6 SQL migrations, SSH tunnel to RDS working |
 | Redis key schema (7 key families) | Built | Cloud Redis connected, idempotency working |
 | Email intake (Graph API) | Built | Real MSAL OAuth2, attachment download + S3 upload, 30+ field storage |
 | Portal intake (POST /queries) | Built | Pydantic validation, X-Vendor-ID header auth |
-| S3 storage adapter | Built | boto3 direct, raw emails + attachments stored |
-| SQS queue adapter | Built | boto3 direct, payloads enqueued and verified |
-| EventBridge adapter | Built | boto3 direct, EmailIngested/QueryReceived events |
+| S3 / SQS / EventBridge adapters | Built | boto3 direct, all cloud services connected |
 | Salesforce adapter | Built | Real Salesforce SOQL queries via simple-salesforce |
-| Structured logging | Built | Console + rotating JSON file logs in data/logs/ |
-| Diagnostic scripts | Built | AWS connectivity check, Graph API check, DB check |
-| AI Pipeline (LangGraph orchestrator) | Phase 3 | Not yet built |
+| Bedrock adapter (LLM + Embeddings) | Built | Claude Sonnet 3.5 + Titan Embed v2 via invoke_model |
+| OpenAI adapter (Fallback) | Built | GPT-4o + text-embedding-3-small, automatic fallback |
+| LLM Factory (multi-provider) | Built | Bedrock → OpenAI fallback chain, 4 provider modes |
+| LangGraph pipeline (Steps 7-9) | Built | Context loading → Analysis → Routing + KB Search → Path A/B/C |
+| Query Analysis Agent (LLM Call #1) | Built | Jinja2 prompt template, JSON parsing, two-attempt retry |
+| Routing rules engine | Built | 16-cell SLA matrix, team assignment, automation blocking |
+| KB search (pgvector) | Built | Titan Embed v2 → cosine similarity, fact detection |
+| SQS pipeline consumer | Built | Long-poll, delete-on-success, background task in lifespan |
+| KB seed data + script | Built | 5 sample articles, chunking + embedding + pgvector insert |
 | Resolution/Communication agents | Phase 4 | Not yet built |
 | Quality Gate | Phase 4 | Not yet built |
 | Human Review (Path C) | Phase 5 | Not yet built |
 | SLA Monitoring | Phase 6 | Not yet built |
 | Frontend Portal (Angular) | Built | Full P1-P6 wizard flow: login, dashboard, 3-step query wizard, submit. Zero styling. |
 
-**Test suite:** 128 tests passing (unit + integration). AWS services mocked with moto. Redis mocked with fakeredis.
+**Test suite:** Unit + integration tests. AWS services mocked with moto. Redis mocked with fakeredis. 24 routing unit tests.
 
 ---
 
@@ -49,7 +53,7 @@ Both entry points are built and tested end-to-end with real cloud services:
 - **Email:** Microsoft Graph API with MSAL OAuth2 client_credentials flow
 - **Vendor CRM:** Salesforce CRM (real connection via simple-salesforce, SOQL queries)
 - **Ticketing:** ServiceNow ITSM (Phase 4+)
-- **AI/LLM:** Amazon Bedrock -- Claude Sonnet 3.5 for inference, Titan Embed v2 for embeddings (Phase 3+)
+- **AI/LLM:** Amazon Bedrock (primary) + OpenAI (fallback) -- Claude Sonnet 3.5 / GPT-4o for inference, Titan Embed v2 / text-embedding-3-small for embeddings, automatic provider fallback via LLM factory
 - **Orchestration:** LangGraph (Phase 3+)
 - **Logging:** structlog with JSON file logging (RotatingFileHandler)
 - **Testing:** pytest, moto (AWS mocking), fakeredis
@@ -237,7 +241,17 @@ Other pages:
 
 **Note:** The backend must be running on port 8000 (CORS is configured for localhost:4200). No real authentication -- the fake login endpoint accepts any credentials.
 
-### 13. Verify health check
+### 13. Seed knowledge base articles (Phase 3)
+
+The KB search service requires articles in the `memory.embedding_index` table. Seed them:
+
+```bash
+uv run python -m src.db.seeds.seed_kb_articles
+```
+
+This reads the 5 sample `.md` files from `data/knowledge_base/`, chunks them, embeds each chunk via Amazon Bedrock Titan Embed v2, and inserts into pgvector. Requires database connectivity (SSH tunnel) and Bedrock access.
+
+### 14. Verify health check
 
 ```bash
 curl http://localhost:8000/health
@@ -247,7 +261,7 @@ Expected response:
 ```json
 {
   "status": "ok",
-  "phase": 2,
+  "phase": 3,
   "app_name": "vqms",
   "app_env": "development",
   "version": "1.0.0",
@@ -318,6 +332,52 @@ Logs are written to both console and `data/logs/vqms_YYYY-MM-DD.log` (10 MB rota
 
 ---
 
+## Running the AI Pipeline (Phase 3)
+
+The AI pipeline consumes UnifiedQueryPayload messages from SQS, runs them through the LangGraph pipeline (context loading, query analysis via Bedrock Claude, routing, KB search via pgvector), and selects Path A, B, or C.
+
+### Start both HTTP server and SQS consumer
+
+```bash
+uv run python scripts/run_pipeline.py
+```
+
+The server starts on port 8000 and the SQS consumer runs as a background task inside the FastAPI lifespan.
+
+### Run only the SQS consumer (no HTTP server)
+
+```bash
+uv run python scripts/run_pipeline.py --consumer-only
+```
+
+### Run only the HTTP server (no consumer)
+
+```bash
+uv run python scripts/run_pipeline.py --server-only
+```
+
+### Run the full pipeline end-to-end test
+
+```bash
+uv run python tests/manual/test_phase3_pipeline.py
+```
+
+This creates a test query (Rajesh Mehta / TechNova Solutions, billing invoice inquiry), runs it through the full LangGraph pipeline, and prints analysis results, routing decision, KB search results, and selected path.
+
+### Test Bedrock connectivity
+
+```bash
+uv run python tests/manual/test_bedrock_connection.py
+```
+
+### Test KB search (after seeding)
+
+```bash
+uv run python tests/manual/test_kb_search.py
+```
+
+---
+
 ## Diagnostic Scripts
 
 | Script | What it checks |
@@ -326,6 +386,10 @@ Logs are written to both console and `data/logs/vqms_YYYY-MM-DD.log` (10 MB rota
 | `scripts/check_graph_api.py` | MSAL auth, mailbox access, message listing, attachments, send permission, webhooks |
 | `scripts/check_db.py` | SSH tunnel to bastion, PostgreSQL connectivity |
 | `scripts/run_migrations.py` | Runs all SQL migrations through the SSH tunnel |
+| `scripts/run_pipeline.py` | Starts HTTP server + SQS consumer (or separately with flags) |
+| `tests/manual/test_bedrock_connection.py` | Bedrock LLM (Claude) + embedding (Titan) connectivity |
+| `tests/manual/test_kb_search.py` | KB search via pgvector after seeding articles |
+| `tests/manual/test_phase3_pipeline.py` | Full end-to-end AI pipeline test |
 
 ---
 
@@ -454,7 +518,28 @@ See [Doc/API.md](Doc/API.md) for full request/response documentation.
 | `GRAPH_API_CLIENT_SECRET` | Yes | Azure app client secret |
 | `GRAPH_API_MAILBOX` | Yes | Shared mailbox email address |
 
+| **LLM Provider** | | |
+| `LLM_PROVIDER` | No | Provider mode: `bedrock_with_openai_fallback` (default), `openai_with_bedrock_fallback`, `bedrock_only`, `openai_only` |
+| `EMBEDDING_PROVIDER` | No | Same modes as above, for embedding calls |
+| `OPENAI_API_KEY` | No* | Required if using OpenAI as primary or fallback |
+| `OPENAI_MODEL_ID` | No | Default `gpt-4o` |
+| `OPENAI_EMBEDDING_MODEL_ID` | No | Default `text-embedding-3-small` |
+| `OPENAI_EMBEDDING_DIMENSIONS` | No | Must be `1536` to match pgvector column |
+
 See `.env.copy` for the full list including Bedrock, Salesforce, ServiceNow, Cognito, SLA, and agent configuration variables.
+
+### LLM Provider Configuration
+
+The system supports multiple LLM providers with automatic fallback. Set `LLM_PROVIDER` and `EMBEDDING_PROVIDER` in `.env`:
+
+| Mode | LLM chain | When to use |
+|------|-----------|-------------|
+| `bedrock_with_openai_fallback` | Bedrock → OpenAI | Default. Production with resilience |
+| `openai_with_bedrock_fallback` | OpenAI → Bedrock | When OpenAI is preferred |
+| `bedrock_only` | Bedrock only | Production, no fallback needed |
+| `openai_only` | OpenAI only | Local dev without AWS access |
+
+All LLM calls go through `src/llm/factory.py` — never import from bedrock or openai adapters directly. Both embedding providers return 1536-dimensional vectors compatible with pgvector.
 
 ---
 
@@ -469,7 +554,7 @@ vqms/
     __init__.py
     settings.py                        Pydantic-settings (loads .env, 50+ config fields)
   src/
-    models/                            22 Pydantic models, 7 enums
+    models/                            23 Pydantic models, 7 enums
       email.py                         EmailMessage, EmailAttachment, ParsedEmailPayload
       query.py                         QuerySubmission, UnifiedQueryPayload
       vendor.py                        VendorProfile, VendorMatch, VendorTier
@@ -483,6 +568,16 @@ vqms/
     services/
       email_intake.py                  11-step email ingestion pipeline
       portal_submission.py             7-step portal submission pipeline
+      memory_context.py                Vendor profile (Redis→Salesforce) + history (PostgreSQL)
+      routing.py                       Deterministic routing: SLA matrix, team assignment
+      kb_search.py                     KB search: Titan Embed v2 + pgvector cosine similarity
+    agents/
+      abc_agent.py                     Base agent: Jinja2 templates, LLM calls, JSON parsing
+      query_analysis.py                Query Analysis Agent (LLM Call #1)
+    orchestration/
+      graph.py                         LangGraph StateGraph with conditional edges
+      sqs_consumer.py                  SQS long-poll consumer → LangGraph pipeline
+      nodes/                           7 pipeline node files (context, analysis, routing, stubs)
     api/routes/
       auth.py                          POST /auth/login (fake dev auth)
       dashboard.py                     GET /dashboard/kpis, GET /queries, GET /queries/{id}
@@ -490,7 +585,8 @@ vqms/
       webhooks.py                      POST /webhooks/ms-graph (email entry point)
     adapters/
       graph_api.py                     Real MSAL OAuth2 + Graph API (fetch, send, attachments)
-      salesforce.py                    Stub with mock vendor data (3-step fallback)
+      salesforce.py                    Real Salesforce SOQL queries via simple-salesforce
+      bedrock.py                       Bedrock LLM (Claude Sonnet 3.5) + embeddings (Titan Embed v2)
     storage/
       s3_client.py                     boto3 S3 adapter (upload/download)
     queues/
@@ -515,10 +611,12 @@ vqms/
       exceptions.py                    Domain exception classes
   tests/
     conftest.py                        Shared fixtures (moto, fakeredis, sample data)
-    unit/                              7 test files (models, adapters, services, redis, correlation, db)
+    unit/                              8 test files (models, adapters, services, redis, correlation, db, routing)
     integration/                       1 E2E test (full email intake pipeline with mocked AWS)
+    manual/                            4 manual tests (Salesforce, Bedrock, KB search, Phase 3 pipeline)
   scripts/
     run_email_intake.py                Full email pipeline runner against real services
+    run_pipeline.py                    AI pipeline runner (--consumer-only / --server-only)
     check_aws.py                       AWS connectivity diagnostic (S3, SQS, EventBridge)
     check_graph_api.py                 Graph API connectivity diagnostic (8 checks)
     check_db.py                        Database connectivity check via SSH tunnel

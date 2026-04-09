@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 from src.services.email_intake import process_email_notification
 from src.utils.exceptions import DuplicateQueryError
+from src.utils.logger import log_api_call
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ class GraphNotificationPayload(BaseModel):
 
 
 @router.post("/webhooks/ms-graph", status_code=202, response_model=None)
+@log_api_call
 async def handle_graph_notification(
     payload: GraphNotificationPayload | None = None,
     validationToken: str | None = Query(default=None),  # noqa: N803

@@ -99,13 +99,13 @@ class SalesforceAdapter:
             )
             logger.info(
                 "Salesforce connection established",
-                extra={"instance_url": self._sf.sf_instance},
+                extra={"tool": "salesforce", "instance_url": self._sf.sf_instance},
             )
             return self._sf
         except SalesforceAuthenticationFailed as exc:
             logger.error(
                 "Salesforce authentication failed — check credentials",
-                extra={"error": str(exc)},
+                extra={"tool": "salesforce", "error": str(exc)},
             )
             raise SalesforceAdapterError(
                 f"Salesforce authentication failed: {exc}"
@@ -113,7 +113,7 @@ class SalesforceAdapter:
         except Exception as exc:
             logger.error(
                 "Salesforce connection error",
-                extra={"error": str(exc)},
+                extra={"tool": "salesforce", "error": str(exc)},
             )
             raise SalesforceAdapterError(
                 f"Salesforce connection error: {exc}"
@@ -162,6 +162,7 @@ class SalesforceAdapter:
         logger.info(
             "Salesforce SOQL: find_contact_by_email (Vendor_Contact__c)",
             extra={
+                "tool": "salesforce",
                 "email": email,
                 "correlation_id": correlation_id,
             },
@@ -252,6 +253,7 @@ class SalesforceAdapter:
         logger.info(
             "Salesforce SOQL: find_account_by_id (Vendor_Account__c)",
             extra={
+                "tool": "salesforce",
                 "account_id": account_id,
                 "correlation_id": correlation_id,
             },
@@ -343,6 +345,7 @@ class SalesforceAdapter:
         logger.info(
             "Salesforce SOQL: find_account_by_vendor_id (Vendor_Account__c)",
             extra={
+                "tool": "salesforce",
                 "vendor_id": vendor_id,
                 "correlation_id": correlation_id,
             },
@@ -434,6 +437,7 @@ class SalesforceAdapter:
         logger.info(
             "Salesforce SOQL: find_account_by_name (Vendor_Account__c)",
             extra={
+                "tool": "salesforce",
                 "search_name": name,
                 "correlation_id": correlation_id,
             },

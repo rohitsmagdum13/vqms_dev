@@ -28,6 +28,7 @@ from src.utils.correlation import (
 )
 from src.utils.exceptions import DuplicateQueryError
 from src.utils.helpers import utc_now
+from src.utils.log_context import LogContext
 
 logger = logging.getLogger(__name__)
 
@@ -69,14 +70,18 @@ async def submit_portal_query(
     query_id = generate_query_id()
     now = utc_now()
 
+    ctx = LogContext(
+        correlation_id=correlation_id,
+        execution_id=execution_id,
+        query_id=query_id,
+        agent_role="portal_submission",
+        step="P6",
+        status="OPEN",
+    )
+
     logger.info(
         "Processing portal submission",
-        extra={
-            "query_id": query_id,
-            "execution_id": execution_id,
-            "vendor_id": vendor_id,
-            "correlation_id": correlation_id,
-        },
+        extra={**ctx.to_dict(), "vendor_id": vendor_id},
     )
 
     # --- Step 1: Idempotency Check ---
@@ -142,11 +147,7 @@ async def submit_portal_query(
 
     logger.info(
         "Portal submission accepted",
-        extra={
-            "query_id": query_id,
-            "execution_id": execution_id,
-            "correlation_id": correlation_id,
-        },
+        extra=ctx.to_dict(),
     )
 
     return {

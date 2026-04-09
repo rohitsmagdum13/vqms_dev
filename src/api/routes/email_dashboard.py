@@ -32,6 +32,7 @@ from src.services.email_dashboard_service import (
     generate_attachment_download_url,
 )
 from src.utils.correlation import generate_correlation_id
+from src.utils.logger import log_api_call
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,7 @@ router = APIRouter(prefix="/emails", tags=["email-dashboard"])
 
 
 @router.get("", response_model=MailChainListResponse)
+@log_api_call
 async def list_email_chains(
     page: int = Query(default=1, ge=1, description="Page number (1-based)"),
     page_size: int = Query(default=20, ge=1, le=100, description="Items per page"),
@@ -130,6 +132,7 @@ async def list_email_chains(
 
 
 @router.get("/stats", response_model=EmailStatsResponse)
+@log_api_call
 async def get_email_stats(
     x_correlation_id: str | None = Header(default=None),
 ) -> EmailStatsResponse:
@@ -149,6 +152,7 @@ async def get_email_stats(
 
 
 @router.get("/{query_id}", response_model=MailChainResponse)
+@log_api_call
 async def get_email_chain(
     query_id: str,
     x_correlation_id: str | None = Header(default=None),
@@ -184,6 +188,7 @@ async def get_email_chain(
     "/{query_id}/attachments/{attachment_id}/download",
     response_model=AttachmentDownloadResponse,
 )
+@log_api_call
 async def download_attachment(
     query_id: str,
     attachment_id: int,

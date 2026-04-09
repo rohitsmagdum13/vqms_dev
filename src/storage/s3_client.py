@@ -68,7 +68,7 @@ async def upload_file(
         s3_uri = f"s3://{bucket}/{key}"
         logger.info(
             "Uploaded to S3",
-            extra={"s3_uri": s3_uri, "correlation_id": correlation_id},
+            extra={"tool": "s3", "s3_uri": s3_uri, "correlation_id": correlation_id},
         )
         return s3_uri
     except ClientError as err:
@@ -77,6 +77,7 @@ async def upload_file(
             logger.error(
                 "S3 permission denied — check IAM policy for this bucket",
                 extra={
+                    "tool": "s3",
                     "bucket": bucket,
                     "key": key,
                     "error_code": error_code,
@@ -113,6 +114,7 @@ async def download_file(
         logger.info(
             "Downloaded from S3",
             extra={
+                "tool": "s3",
                 "bucket": bucket,
                 "key": key,
                 "size_bytes": len(content),
@@ -130,6 +132,7 @@ async def download_file(
             logger.error(
                 "S3 permission denied on download",
                 extra={
+                    "tool": "s3",
                     "bucket": bucket,
                     "key": key,
                     "error_code": error_code,

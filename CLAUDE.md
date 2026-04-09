@@ -786,7 +786,7 @@ vqms/
 13. **Monitoring & SLA Alerting Service** — Watches ticket age and triggers alerts at 70% (warn resolver), 85% (L1 manager escalation), and 95% (L2 senior escalation) of the SLA deadline. Uses Step Functions wait states. For Path C: SLA clock starts AFTER human review completes — review time does NOT count against SLA.
 
 ### Cross-Cutting Services
-14. **Bedrock Integration Service** — The ONLY place that talks to Amazon Bedrock. All LLM calls (Claude Sonnet 3.5) AND all embedding calls (Titan Embed v2) go through this single gateway. Manages prompt templates (loaded from S3), token tracking, response parsing, retry logic. Stores prompt snapshots for audit trail.
+14. **LLM Factory (`src/llm/factory.py`)** — The ONLY entry point for all LLM and embedding calls. Supports multiple providers with automatic fallback: Bedrock (Claude Sonnet 3.5 + Titan Embed v2) as primary, OpenAI (GPT-4o + text-embedding-3-small) as fallback. Provider mode is configurable via `LLM_PROVIDER` and `EMBEDDING_PROVIDER` env vars. Both embedding providers return 1536-dimensional vectors for pgvector compatibility. Nobody imports from bedrock or openai adapters directly — all calls go through `llm_complete()` and `llm_embed()`.
 15. **Audit Trail** — Every action in the system gets logged to `audit.action_log` for compliance and debugging.
 16. **Observability** — Structured logging on every service with correlation IDs to trace a query through the entire pipeline.
 

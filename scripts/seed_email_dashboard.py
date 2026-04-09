@@ -27,7 +27,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 
@@ -37,12 +37,11 @@ load_dotenv(override=True)
 from config.settings import get_settings  # noqa: E402
 from src.db.connection import (  # noqa: E402
     close_db,
-    init_db,
     get_engine,
+    init_db,
     start_ssh_tunnel,
     stop_ssh_tunnel,
 )
-
 
 # --- Test Data ---
 

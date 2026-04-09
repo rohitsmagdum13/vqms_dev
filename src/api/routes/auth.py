@@ -16,6 +16,8 @@ import logging
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
+from src.utils.logger import log_api_call
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["auth"])
@@ -39,6 +41,7 @@ class LoginResponse(BaseModel):
 
 
 @router.post("/auth/login")
+@log_api_call
 async def fake_login(request: LoginRequest) -> LoginResponse:
     """Fake login that accepts any email/password.
 

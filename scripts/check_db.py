@@ -22,14 +22,14 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
-from config.settings import get_settings
-from src.db.connection import start_ssh_tunnel, stop_ssh_tunnel
-
 # asyncpg is used directly here (not SQLAlchemy) because
 # CREATE DATABASE cannot run inside a transaction block,
 # and we need to connect to the default 'postgres' database
 # first to check what databases exist.
 import asyncpg
+
+from config.settings import get_settings
+from src.db.connection import start_ssh_tunnel, stop_ssh_tunnel
 
 
 async def main(*, create: bool = False):
@@ -85,8 +85,8 @@ async def main(*, create: bool = False):
             await conn.execute(f'CREATE DATABASE "{target_db}"')
             print(f"[OK] Database '{target_db}' created successfully.")
         else:
-            print(f"Run with --create to create it:")
-            print(f"  uv run python scripts/check_db.py --create")
+            print("Run with --create to create it:")
+            print("  uv run python scripts/check_db.py --create")
 
     await conn.close()
 

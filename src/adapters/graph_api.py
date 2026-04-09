@@ -153,7 +153,7 @@ async def fetch_email_by_resource(
 
     logger.info(
         "Fetching email from Graph API",
-        extra={"url": url, "correlation_id": correlation_id},
+        extra={"tool": "graph_api", "url": url, "correlation_id": correlation_id},
     )
 
     async with httpx.AsyncClient() as client:
@@ -243,6 +243,7 @@ async def fetch_latest_email(
     logger.info(
         "Fetching latest email from mailbox",
         extra={
+            "tool": "graph_api",
             "mailbox": settings.graph_api_mailbox,
             "correlation_id": correlation_id,
         },
@@ -349,6 +350,7 @@ async def send_email(
     logger.info(
         "Sending email via Graph API",
         extra={
+            "tool": "graph_api",
             "to": to_email,
             "subject": subject,
             "correlation_id": correlation_id,
@@ -363,7 +365,7 @@ async def send_email(
 
     logger.info(
         "Email sent successfully",
-        extra={"to": to_email, "correlation_id": correlation_id},
+        extra={"tool": "graph_api", "to": to_email, "correlation_id": correlation_id},
     )
     return True
 

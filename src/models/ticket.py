@@ -97,4 +97,12 @@ class RoutingDecision(BaseModel):
         default=False,
         description="True if automation is blocked (CRITICAL urgency, BLOCK_AUTOMATION flag)",
     )
+    sla_deadline: datetime | None = Field(
+        default=None,
+        description="Absolute deadline: created_at + sla_hours",
+    )
+    risk_flags: list[str] = Field(
+        default_factory=list,
+        description="Vendor risk flags that influenced routing",
+    )
     created_at: datetime = Field(default_factory=utc_now)

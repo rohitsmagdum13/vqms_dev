@@ -151,6 +151,30 @@ class AnalysisResult(BaseModel):
         default=None,
         description="Raw LLM response text — stored for audit trail",
     )
+    tokens_in: int | None = Field(
+        default=None,
+        description="Input tokens consumed by the LLM call",
+    )
+    tokens_out: int | None = Field(
+        default=None,
+        description="Output tokens produced by the LLM call",
+    )
+    cost_usd: float | None = Field(
+        default=None,
+        description="Estimated cost in USD for this LLM call",
+    )
+    latency_ms: float | None = Field(
+        default=None,
+        description="Wall-clock time in milliseconds for the LLM call",
+    )
+    provider: str | None = Field(
+        default=None,
+        description="LLM provider used: 'bedrock' or 'openai'",
+    )
+    was_fallback: bool | None = Field(
+        default=None,
+        description="True if the primary provider failed and fallback was used",
+    )
 
 
 class WorkflowState(BaseModel):

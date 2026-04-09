@@ -19,6 +19,7 @@ from fastapi import APIRouter, Header, HTTPException, Query
 from sqlalchemy import text
 
 from src.db.connection import get_engine
+from src.utils.logger import log_api_call
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,7 @@ router = APIRouter(tags=["dashboard"])
 
 
 @router.get("/dashboard/kpis")
+@log_api_call
 async def get_dashboard_kpis(
     x_vendor_id: str | None = Header(default=None),
 ) -> dict:
@@ -106,6 +108,7 @@ async def get_dashboard_kpis(
 
 
 @router.get("/queries")
+@log_api_call
 async def list_queries(
     x_vendor_id: str | None = Header(default=None),
     limit: int = Query(default=20, ge=1, le=100),
@@ -179,6 +182,7 @@ async def list_queries(
 
 
 @router.get("/queries/{query_id}")
+@log_api_call
 async def get_query_detail(
     query_id: str,
     x_vendor_id: str | None = Header(default=None),

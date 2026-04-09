@@ -84,6 +84,7 @@ async def publish_event(
             logger.error(
                 "EventBridge event failed",
                 extra={
+                    "tool": "eventbridge",
                     "detail_type": detail_type,
                     "error_code": failed.get("ErrorCode"),
                     "error_message": failed.get("ErrorMessage"),
@@ -96,6 +97,7 @@ async def publish_event(
         logger.info(
             "Published event to EventBridge",
             extra={
+                "tool": "eventbridge",
                 "detail_type": detail_type,
                 "event_id": event_id,
                 "correlation_id": correlation_id,
@@ -109,6 +111,7 @@ async def publish_event(
             logger.error(
                 "EventBridge permission denied — check IAM policy",
                 extra={
+                    "tool": "eventbridge",
                     "detail_type": detail_type,
                     "error_code": error_code,
                     "correlation_id": correlation_id,

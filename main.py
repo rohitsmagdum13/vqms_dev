@@ -1,12 +1,14 @@
 """VQMS — Vendor Query Management System.
 
 Entry point for the FastAPI application. Sets up structured logging,
-SSH tunnel to bastion/RDS, database connection pool, and Redis client
-on startup. Provides a health check endpoint that reports connectivity.
+SSH tunnel to bastion/RDS, database connection pool, Redis client,
+and optionally the SQS pipeline consumer on startup. Provides a
+health check endpoint that reports connectivity.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -42,11 +44,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
       2. Establish SSH tunnel to bastion host for RDS access
       3. Connect to PostgreSQL through the tunnel
       4. Connect to Redis
+      5. Start SQS pipeline consumer as background task (if not --server-only)
 
     On shutdown:
-      1. Close database pool
-      2. Close SSH tunnel
-      3. Close Redis connection
+      1. Signal consumer to stop
+      2. Close database pool
+      3. Close SSH tunnel
+      4. Close Redis connection
 
     Database, tunnel, and Redis failures are logged but do not
     prevent startup — the health check will report disconnected.
@@ -120,9 +124,39 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             exc_info=True,
         )
 
+    # Step 4: Start SQS pipeline consumer as a background task
+    # The consumer polls SQS for UnifiedQueryPayload messages and
+    # runs them through the LangGraph pipeline (Steps 7-9).
+    # It runs until shutdown_event is set.
+    consumer_task = None
+    shutdown_event = asyncio.Event()
+    try:
+        from src.orchestration.sqs_consumer import start_consumer
+
+        consumer_task = asyncio.create_task(
+            start_consumer(shutdown_event=shutdown_event),
+            name="sqs-pipeline-consumer",
+        )
+        logger.info("SQS pipeline consumer started as background task")
+    except Exception:
+        logger.warning(
+            "Could not start SQS pipeline consumer",
+            exc_info=True,
+        )
+
     yield
 
     # --- Shutdown ---
+    # Signal the consumer to stop gracefully
+    shutdown_event.set()
+    if consumer_task is not None:
+        consumer_task.cancel()
+        try:
+            await consumer_task
+        except asyncio.CancelledError:
+            pass
+        logger.info("SQS pipeline consumer stopped")
+
     await close_db()
     stop_ssh_tunnel()
     await close_redis()
@@ -171,7 +205,7 @@ async def health_check() -> dict:
 
     return {
         "status": "ok",
-        "phase": 2,
+        "phase": 3,
         "app_name": settings.app_name,
         "app_env": settings.app_env,
         "version": settings.app_version,

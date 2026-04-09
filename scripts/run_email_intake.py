@@ -54,7 +54,6 @@ from src.adapters.graph_api import (
     fetch_email_by_resource,
     fetch_latest_email,
 )
-from src.services.vendor_resolution import resolve_vendor
 from src.cache.redis_client import (
     close_redis,
     get_value,
@@ -79,6 +78,7 @@ from src.services.email_intake import (
     _store_email_record,
     _upload_attachments_to_s3,
 )
+from src.services.vendor_resolution import resolve_vendor
 from src.storage.s3_client import upload_file
 from src.utils.correlation import (
     generate_correlation_id,

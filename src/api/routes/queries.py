@@ -18,6 +18,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from src.models.query import QuerySubmission
 from src.services.portal_submission import submit_portal_query
 from src.utils.exceptions import DuplicateQueryError
+from src.utils.logger import log_api_call
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ router = APIRouter(tags=["queries"])
 
 
 @router.post("/queries", status_code=201)
+@log_api_call
 async def create_query(
     request: Request,
     submission: QuerySubmission,

@@ -117,6 +117,34 @@ class AppSettings(BaseSettings):
     # --- AWS General ---
     aws_region: str = "us-east-1"
 
+    # --- LLM Provider Configuration ---
+    # Controls which providers are used and in what order.
+    # Options: bedrock_with_openai_fallback, openai_with_bedrock_fallback,
+    #          bedrock_only, openai_only
+    llm_provider: str = ""
+    embedding_provider: str = ""
+
+    # --- Amazon Bedrock (LLM + Embeddings) ---
+    # All LLM calls go through the LLM factory (src/llm/factory.py)
+    bedrock_model_id: str = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+    bedrock_region: str = "us-east-1"
+    bedrock_max_tokens: int = 4096
+    bedrock_temperature: float = 0.1
+    bedrock_fallback_model_id: str = "anthropic.claude-3-haiku-20240307-v1:0"
+    bedrock_max_retries: int = 3
+    bedrock_timeout_seconds: int = 30
+    bedrock_embedding_model_id: str = "amazon.titan-embed-text-v2:0"
+    bedrock_embedding_dimensions: int = 1536
+
+    # --- OpenAI (Fallback Provider) ---
+    openai_api_key: str = ""
+    openai_model_id: str = ""
+    openai_embedding_model_id: str = "text-embedding-3-small"
+    openai_embedding_dimensions: int = 1536
+    openai_max_tokens: int = 4096
+    openai_temperature: float = 0.1
+    openai_api_base_url: str = "https://api.openai.com/v1"
+
     # --- SLA ---
     sla_warning_threshold_percent: int = 70
     sla_l1_escalation_threshold_percent: int = 85

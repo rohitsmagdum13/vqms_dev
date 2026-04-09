@@ -58,7 +58,7 @@ def _get_queue_url(queue_name: str) -> str:
         if error_code == "AWS.SimpleQueueService.NonExistentQueue":
             logger.error(
                 "SQS queue does not exist — ask infra team to create it",
-                extra={"queue_name": queue_name},
+                extra={"tool": "sqs", "queue_name": queue_name},
             )
         raise
 
@@ -105,6 +105,7 @@ async def publish(
         logger.info(
             "Published to SQS",
             extra={
+                "tool": "sqs",
                 "queue_name": queue_name,
                 "message_id": message_id,
                 "correlation_id": correlation_id,
@@ -117,6 +118,7 @@ async def publish(
             logger.error(
                 "SQS permission denied — check IAM policy",
                 extra={
+                    "tool": "sqs",
                     "queue_name": queue_name,
                     "error_code": error_code,
                     "correlation_id": correlation_id,
@@ -172,7 +174,7 @@ async def consume(
     except ClientError as err:
         logger.error(
             "SQS consume failed",
-            extra={"queue_name": queue_name, "error": str(err)},
+            extra={"tool": "sqs", "queue_name": queue_name, "error": str(err)},
         )
         raise
 

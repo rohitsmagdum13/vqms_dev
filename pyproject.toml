@@ -21,6 +21,7 @@ dependencies = [
     "langgraph>=1.1.6",
     "langsmith>=0.7.25",
     "msal>=1.35.1",
+    "openai>=2.30.0",
     "orjson>=3.11.8",
     "paramiko<4.0.0",
     "pgvector>=0.4.2",
@@ -42,6 +43,10 @@ dependencies = [
     "tenacity>=9.1.4",
     "uvicorn[standard]>=0.44.0",
 ]
+
+[tool.pytest.ini_options]
+asyncio_mode = "strict"
+testpaths = ["tests"]
 
 [dependency-groups]
 dev = [

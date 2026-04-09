@@ -196,7 +196,7 @@ async def init_redis(
     await _redis_client.ping()
     logger.info(
         "Redis connection established",
-        extra={"host": host, "port": port, "db": db},
+        extra={"tool": "redis", "host": host, "port": port, "db": db},
     )
     return _redis_client
 
@@ -215,7 +215,7 @@ async def close_redis() -> None:
 
     if _redis_client is not None:
         await _redis_client.close()
-        logger.info("Redis connection closed")
+        logger.info("Redis connection closed", extra={"tool": "redis"})
         _redis_client = None
 
 
@@ -232,7 +232,7 @@ async def check_redis_health() -> bool:
         await _redis_client.ping()
         return True
     except Exception:
-        logger.warning("Redis health check failed", exc_info=True)
+        logger.warning("Redis health check failed", extra={"tool": "redis"}, exc_info=True)
         return False
 
 
