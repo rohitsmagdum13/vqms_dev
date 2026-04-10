@@ -35,8 +35,7 @@
 
 **What it does:**
 1. Checks whether PostgreSQL is reachable (via `check_db_health()`)
-2. Checks whether Redis is reachable (via `check_redis_health()`)
-3. Returns app metadata and connectivity status for both backends
+2. Returns app metadata and connectivity status
 
 **Request:**
 - No request body
@@ -56,8 +55,7 @@ curl http://localhost:8000/health
   "app_name": "vqms",
   "app_env": "development",
   "version": "1.0.0",
-  "database": "connected",
-  "redis": "connected"
+  "database": "connected"
 }
 ```
 
@@ -70,7 +68,6 @@ curl http://localhost:8000/health
 | app_env | string | From `APP_ENV` env var (`development`, `staging`, `production`) |
 | version | string | From `APP_VERSION` env var |
 | database | string | `"connected"` or `"disconnected"` |
-| redis | string | `"connected"` or `"disconnected"` |
 
 **Error responses:**
 - None. Always returns 200 if the server is up. Backend connectivity is reported in the response body.
@@ -93,7 +90,7 @@ curl http://localhost:8000/health
 2. Parses and validates request body via `QuerySubmission` Pydantic model
 3. Calls `submit_portal_query()` which runs the 7-step portal intake pipeline:
    - Generates `query_id` (VQ-YYYY-NNNN format), `execution_id` (UUID), `correlation_id` (UUID)
-   - Checks Redis for duplicate submission (idempotency via `vqms:idempotency:{query_id}`)
+   - Checks cache for duplicate submission (idempotency via `vqms:idempotency:{query_id}`)
    - Inserts into PostgreSQL `workflow.case_execution` with status `new`
    - Publishes `QueryReceived` event to EventBridge
    - Pushes `UnifiedQueryPayload` to SQS `vqms-query-intake-queue`
@@ -159,7 +156,7 @@ curl -X POST http://localhost:8000/queries -H "Content-Type: application/json" -
 
 **Storage writes:**
 - **PostgreSQL:** INSERT into `workflow.case_execution`
-- **Redis:** SET `vqms:idempotency:{query_id}` with 7-day TTL
+- **PostgreSQL cache:** SET `vqms:idempotency:{query_id}` with 7-day TTL
 - **EventBridge:** `QueryReceived` event to `vqms-event-bus`
 - **SQS:** `UnifiedQueryPayload` message to `vqms-query-intake-queue`
 
@@ -337,7 +334,7 @@ This endpoint handles two scenarios:
 1. Microsoft Graph sends a JSON payload with an array of changed resources (new emails)
 2. For each notification, calls `process_email_notification()` which runs the full 11-step email intake pipeline:
    - Fetches the email from Graph API
-   - Checks Redis idempotency
+   - Checks cache idempotency
    - Resolves vendor via Salesforce
    - Correlates email thread
    - Uploads attachments to S3
@@ -429,7 +426,7 @@ curl -X POST http://localhost:8000/webhooks/ms-graph -H "Content-Type: applicati
 - **S3:** Raw email JSON to `vqms-email-raw-prod`, attachments to `vqms-email-attachments-prod`
 - **PostgreSQL:** INSERT into `intake.email_messages`
 - **PostgreSQL:** INSERT into `workflow.case_execution`
-- **Redis:** SET `vqms:idempotency:{message_id}` with 7-day TTL
+- **PostgreSQL cache:** SET `vqms:idempotency:{message_id}` with 7-day TTL
 - **EventBridge:** `EmailIngested` event to `vqms-event-bus`
 - **SQS:** `UnifiedQueryPayload` message to `vqms-email-intake-queue`
 

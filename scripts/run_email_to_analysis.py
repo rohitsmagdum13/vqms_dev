@@ -4,7 +4,7 @@
 This script runs the COMPLETE email pipeline in a single process:
 
   Step E1:  Fetch email from shared mailbox (MS Graph API)
-  Step E2a: Idempotency check (Redis)
+  Step E2a: Idempotency check (PostgreSQL cache)
   Step E2b: Vendor resolution (Salesforce 3-step fallback)
   Step E2c: Thread correlation (NEW / EXISTING_OPEN)
   Step E2d: Store raw email + attachments in S3
@@ -27,7 +27,7 @@ Usage:
   uv run python scripts/run_email_to_analysis.py --resource "messages/AAMk..."
 
 Prerequisites:
-  1. .env configured with Graph API, AWS, Redis, PostgreSQL credentials
+  1. .env configured with Graph API, AWS, PostgreSQL credentials
   2. Pipeline is NOT required to be running separately
 """
 
@@ -56,11 +56,10 @@ from src.adapters.graph_api import (
     fetch_email_by_resource,
     fetch_latest_email,
 )
-from src.cache.redis_client import (
-    close_redis,
+from src.cache.pg_cache import (
+    delete_key,
     get_value,
     idempotency_key,
-    init_redis,
     set_with_ttl,
 )
 from src.db.connection import (
@@ -86,7 +85,7 @@ from src.utils.correlation import (
     generate_execution_id,
     generate_query_id,
 )
-from src.utils.helpers import utc_now
+from src.utils.helpers import ist_now
 from src.utils.logger import setup_logging
 
 # ---------------------------------------------------------------------------
@@ -164,30 +163,11 @@ async def bootstrap_infra() -> dict[str, bool]:
         status["postgres"] = False
         result("PostgreSQL", f"[FAIL] {e}")
 
-    # --- Redis ---
-    try:
-        await init_redis(
-            host=settings.redis_host,
-            port=settings.redis_port,
-            password=settings.redis_password,
-            db=settings.redis_db,
-            ssl=settings.redis_ssl,
-        )
-        status["redis"] = True
-        result("Redis", "[OK]")
-    except Exception as e:
-        status["redis"] = False
-        result("Redis", f"[FAIL] {e}")
-
     return status
 
 
 async def teardown_infra() -> None:
     """Close all infrastructure connections."""
-    try:
-        await close_redis()
-    except Exception:
-        pass
     try:
         await close_db()
     except Exception:
@@ -251,26 +231,26 @@ async def run_full_email_pipeline(*, resource: str | None) -> None:
     result("Body preview", body_preview + "..." if len(body_preview) == 150 else body_preview)
 
     # =====================================================================
-    # Step E2a: Idempotency check (Redis)
+    # Step E2a: Idempotency check (PostgreSQL cache)
     # =====================================================================
-    step("E2a", "Idempotency check (Redis)")
+    step("E2a", "Idempotency check (PostgreSQL cache)")
 
-    if infra.get("redis"):
-        key, ttl = idempotency_key(f"email:{email.message_id}")
-        existing = await get_value(key)
-        if existing is not None:
-            result("Result", "[DUPLICATE] Already processed — clearing for re-run")
-            # For testing, we clear the key so the pipeline can re-run
-            from src.cache.redis_client import get_redis_client
-            redis = get_redis_client()
-            if redis:
-                await redis.delete(key)
+    if infra.get("postgres"):
+        try:
+            key, ttl = idempotency_key(f"email:{email.message_id}")
+            existing = await get_value(key)
+            if existing is not None:
+                result("Result", "[DUPLICATE] Already processed — clearing for re-run")
+                # For testing, we clear the key so the pipeline can re-run
+                await delete_key(key)
                 result("Action", "Idempotency key cleared for testing")
-        await set_with_ttl(key, "1", ttl)
-        result("Key", key)
-        result("TTL", f"{ttl}s (7 days)")
+            await set_with_ttl(key, "1", ttl)
+            result("Key", key)
+            result("TTL", f"{ttl}s (7 days)")
+        except Exception as e:
+            result("Result", f"[WARN] Cache check failed ({e})")
     else:
-        result("Result", "[SKIP] Redis unavailable")
+        result("Result", "[SKIP] Database unavailable")
 
     # =====================================================================
     # Step E2b: Vendor resolution (Salesforce)
@@ -414,7 +394,7 @@ async def run_full_email_pipeline(*, resource: str | None) -> None:
         reference_number=None,
         thread_status=thread_status,
         message_id=email.message_id,
-        received_at=email.received_at or utc_now(),
+        received_at=email.received_at or ist_now(),
     )
 
     # =====================================================================

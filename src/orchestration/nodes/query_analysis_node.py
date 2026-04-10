@@ -6,7 +6,6 @@ sentiment analysis, and confidence scoring.
 
 After analysis:
   - Updates case_execution.analysis_result in PostgreSQL
-  - Updates Redis workflow state to ANALYSIS_COMPLETE
   - Uploads prompt snapshot to S3 for audit trail
   - Publishes AnalysisCompleted event to EventBridge
   - Writes audit log entry
@@ -20,7 +19,6 @@ import logging
 from sqlalchemy import text
 
 from src.agents.query_analysis import QueryAnalysisAgent
-from src.cache.redis_client import set_with_ttl, workflow_key
 from src.db.connection import get_engine
 from src.events.eventbridge import publish_event
 from src.models.budget import Budget
@@ -79,28 +77,6 @@ async def query_analysis(state: dict) -> dict:
 
     # --- Persist analysis result to PostgreSQL ---
     await _save_analysis_result(execution_id, analysis_dict, correlation_id=correlation_id)
-
-    # --- Update Redis workflow state ---
-    key, ttl = workflow_key(execution_id)
-    try:
-        await set_with_ttl(
-            key,
-            json.dumps({
-                "status": "analysis_complete",
-                "query_id": state["query_id"],
-                "vendor_id": payload.get("vendor_id"),
-                "step": "ANALYSIS_COMPLETE",
-                "confidence": analysis_result.confidence_score,
-                "intent": analysis_result.intent_classification,
-            }),
-            ttl,
-        )
-    except Exception:
-        logger.warning(
-            "Failed to update Redis workflow state after analysis",
-            extra={"execution_id": execution_id, "correlation_id": correlation_id},
-            exc_info=True,
-        )
 
     # --- Upload prompt snapshot to S3 for audit trail ---
     try:
@@ -199,16 +175,18 @@ async def _save_analysis_result(
         "UPDATE workflow.case_execution "
         "SET analysis_result = :analysis_result, "
         "    status = 'analysis_complete', "
-        "    updated_at = NOW() "
+        "    updated_at = :now_ist "
         "WHERE execution_id = :execution_id"
     )
     try:
+        from src.utils.helpers import ist_now
         async with engine.begin() as conn:
             await conn.execute(
                 sql,
                 {
                     "analysis_result": json.dumps(analysis_dict, default=str),
                     "execution_id": execution_id,
+                    "now_ist": ist_now(),
                 },
             )
     except Exception:

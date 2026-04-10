@@ -27,7 +27,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 
@@ -73,7 +73,7 @@ SEED_EMAILS = [
         "body_html": None,
         "body_preview": "Dear Support Team, We are writing regarding the payment status...",
         "raw_s3_key": "emails/seed-msg-001.json",
-        "received_at": datetime(2026, 4, 7, 10, 30, 0, tzinfo=timezone.utc),
+        "received_at": datetime(2026, 4, 7, 10, 30, 0, tzinfo=timezone(timedelta(hours=5, minutes=30))),
         "has_attachments": True,
         "attachment_count": 1,
         "thread_id": "CONV-SEED-001",
@@ -116,7 +116,7 @@ SEED_EMAILS = [
         "body_html": None,
         "body_preview": "Hi Rajesh, Thank you for reaching out. We have checked...",
         "raw_s3_key": "emails/seed-msg-002.json",
-        "received_at": datetime(2026, 4, 7, 14, 15, 0, tzinfo=timezone.utc),
+        "received_at": datetime(2026, 4, 7, 14, 15, 0, tzinfo=timezone(timedelta(hours=5, minutes=30))),
         "has_attachments": False,
         "attachment_count": 0,
         "thread_id": "CONV-SEED-001",
@@ -153,7 +153,7 @@ SEED_EMAILS = [
         "body_html": None,
         "body_preview": "Thank you for the update. We will wait until April 10.",
         "raw_s3_key": "emails/seed-msg-003.json",
-        "received_at": datetime(2026, 4, 7, 15, 0, 0, tzinfo=timezone.utc),
+        "received_at": datetime(2026, 4, 7, 15, 0, 0, tzinfo=timezone(timedelta(hours=5, minutes=30))),
         "has_attachments": False,
         "attachment_count": 0,
         "thread_id": "CONV-SEED-001",
@@ -199,7 +199,7 @@ SEED_EMAILS = [
         "body_html": None,
         "body_preview": "Hi, Our purchase order PO-2026-78432 was supposed to ship...",
         "raw_s3_key": "emails/seed-msg-004.json",
-        "received_at": datetime(2026, 4, 8, 8, 45, 0, tzinfo=timezone.utc),
+        "received_at": datetime(2026, 4, 8, 8, 45, 0, tzinfo=timezone(timedelta(hours=5, minutes=30))),
         "has_attachments": True,
         "attachment_count": 2,
         "thread_id": "CONV-SEED-002",
@@ -241,7 +241,7 @@ SEED_EMAILS = [
         "body_html": None,
         "body_preview": "Hello, Our contract #CON-2025-112 expires on May 31, 2026...",
         "raw_s3_key": "emails/seed-msg-005.json",
-        "received_at": datetime(2026, 4, 8, 11, 20, 0, tzinfo=timezone.utc),
+        "received_at": datetime(2026, 4, 8, 11, 20, 0, tzinfo=timezone(timedelta(hours=5, minutes=30))),
         "has_attachments": False,
         "attachment_count": 0,
         "thread_id": None,
@@ -356,7 +356,7 @@ async def insert_seed_data(engine) -> None:
     """Insert test emails, attachments, and case_execution records."""
     from sqlalchemy import text
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(timezone(timedelta(hours=5, minutes=30)))
 
     async with engine.begin() as conn:
         # Insert case_execution records first (emails reference query_id)

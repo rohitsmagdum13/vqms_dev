@@ -2,13 +2,13 @@
 
 Exercises the FULL email intake flow from webhook notification arrival
 to SQS message output, with real AWS mocking (moto) for S3, SQS,
-EventBridge and mock patches for Graph API and Redis.
+EventBridge and mock patches for Graph API and cache.
 
 Pipeline under test (Steps E1-E2 from Solution Flow Document):
 
   1. POST /webhooks/ms-graph — webhook receives Graph notification
   2. fetch_email_by_resource() — Graph API fetches email (mocked)
-  3. Idempotency check — Redis checks for duplicate message_id (mocked)
+  3. Idempotency check — cache checks for duplicate message_id (mocked)
   4. Vendor resolution — Salesforce stub matches sender email
   5. Thread correlation — determines NEW / EXISTING_OPEN
   6. S3 upload — raw email stored in vqms-email-raw-prod (moto)
@@ -24,7 +24,7 @@ After the pipeline:
   - Verify the EventBridge event was published
   - Verify the webhook HTTP response is correct
 
-Uses moto for S3/SQS/EventBridge, fakeredis (via mock) for Redis,
+Uses moto for S3/SQS/EventBridge, in-memory mock for cache,
 and mock for Graph API. No real AWS credentials or services needed.
 """
 
@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import UTC, datetime
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import boto3
@@ -68,7 +68,7 @@ TECHNOVA_EMAIL = EmailMessage(
         "Best regards,\nRajesh Mehta\nTechNova Solutions"
     ),
     body_html=None,
-    received_at=datetime(2026, 4, 6, 10, 30, 0, tzinfo=UTC),
+    received_at=datetime(2026, 4, 6, 10, 30, 0, tzinfo=timezone(timedelta(hours=5, minutes=30))),
     attachments=[
         EmailAttachment(
             filename="INV-2026-0451.pdf",
@@ -90,7 +90,7 @@ TECHNOVA_REPLY_EMAIL = EmailMessage(
     subject="Re: Invoice #INV-2026-0451 — Payment Status Query",
     body_text="Thank you for the update. Could you confirm the exact date?",
     body_html=None,
-    received_at=datetime(2026, 4, 6, 14, 15, 0, tzinfo=UTC),
+    received_at=datetime(2026, 4, 6, 14, 15, 0, tzinfo=timezone(timedelta(hours=5, minutes=30))),
     attachments=[],
 )
 
@@ -105,7 +105,7 @@ UNKNOWN_SENDER_EMAIL = EmailMessage(
     subject="Question about services",
     body_text="Hello, I have a general question about your services.",
     body_html=None,
-    received_at=datetime(2026, 4, 6, 11, 0, 0, tzinfo=UTC),
+    received_at=datetime(2026, 4, 6, 11, 0, 0, tzinfo=timezone(timedelta(hours=5, minutes=30))),
     attachments=[],
 )
 
@@ -180,11 +180,11 @@ def aws_infra(aws_credentials):
 
 
 # ---------------------------------------------------------------------------
-# Redis mock (simulates in-memory key store)
+# Cache mock (simulates in-memory key store)
 # ---------------------------------------------------------------------------
 
-class FakeRedis:
-    """Simple in-memory Redis mock for idempotency checks.
+class FakeCache:
+    """Simple in-memory cache mock for idempotency checks.
 
     Tracks keys and TTLs. get_value() returns None for missing keys.
     set_with_ttl() stores the key. This is enough for idempotency logic.
@@ -237,7 +237,7 @@ class TestEmailIntakeEndToEnd:
 
     Each test exercises the full pipeline: webhook → service →
     S3 + SQS + EventBridge. AWS services are real (moto-mocked).
-    Graph API and Redis are mock-patched.
+    Graph API and cache are mock-patched.
     """
 
     @pytest.mark.asyncio
@@ -250,11 +250,11 @@ class TestEmailIntakeEndToEnd:
         Rajesh Mehta from TechNova, Invoice #INV-2026-0451.
         """
         mock_fetch.return_value = TECHNOVA_EMAIL
-        fake_redis = FakeRedis()
+        fake_cache = FakeCache()
 
         with (
-            patch("src.services.email_intake.get_value", side_effect=fake_redis.get_value),
-            patch("src.services.email_intake.set_with_ttl", side_effect=fake_redis.set_with_ttl),
+            patch("src.services.email_intake.get_value", side_effect=fake_cache.get_value),
+            patch("src.services.email_intake.set_with_ttl", side_effect=fake_cache.set_with_ttl),
         ):
             from src.services.email_intake import process_email_notification
 
@@ -315,9 +315,9 @@ class TestEmailIntakeEndToEnd:
         assert sqs_body["thread_status"] == "NEW"
         assert sqs_body["message_id"] == TECHNOVA_EMAIL.message_id
 
-        # --- Verify Redis: idempotency key set ---
-        assert len(fake_redis.stored_keys) == 1
-        assert any("email:" in k for k in fake_redis.stored_keys)
+        # --- Verify cache: idempotency key set ---
+        assert len(fake_cache.stored_keys) == 1
+        assert any("email:" in k for k in fake_cache.stored_keys)
 
     @pytest.mark.asyncio
     @patch("src.services.email_intake.resolve_vendor", side_effect=_mock_resolve_vendor)
@@ -325,11 +325,11 @@ class TestEmailIntakeEndToEnd:
     async def test_reply_email_thread_correlation(self, mock_fetch, mock_vendor, aws_infra):
         """A reply email (has in_reply_to) should be marked EXISTING_OPEN."""
         mock_fetch.return_value = TECHNOVA_REPLY_EMAIL
-        fake_redis = FakeRedis()
+        fake_cache = FakeCache()
 
         with (
-            patch("src.services.email_intake.get_value", side_effect=fake_redis.get_value),
-            patch("src.services.email_intake.set_with_ttl", side_effect=fake_redis.set_with_ttl),
+            patch("src.services.email_intake.get_value", side_effect=fake_cache.get_value),
+            patch("src.services.email_intake.set_with_ttl", side_effect=fake_cache.set_with_ttl),
         ):
             from src.services.email_intake import process_email_notification
 
@@ -353,11 +353,11 @@ class TestEmailIntakeEndToEnd:
     async def test_unknown_sender_resolves_to_unresolved(self, mock_fetch, mock_vendor, aws_infra):
         """An email from an unknown sender should have vendor_id=UNRESOLVED."""
         mock_fetch.return_value = UNKNOWN_SENDER_EMAIL
-        fake_redis = FakeRedis()
+        fake_cache = FakeCache()
 
         with (
-            patch("src.services.email_intake.get_value", side_effect=fake_redis.get_value),
-            patch("src.services.email_intake.set_with_ttl", side_effect=fake_redis.set_with_ttl),
+            patch("src.services.email_intake.get_value", side_effect=fake_cache.get_value),
+            patch("src.services.email_intake.set_with_ttl", side_effect=fake_cache.set_with_ttl),
         ):
             from src.services.email_intake import process_email_notification
 
@@ -383,11 +383,11 @@ class TestEmailIntakeEndToEnd:
     async def test_duplicate_email_is_rejected(self, mock_fetch, mock_vendor, aws_infra):
         """Sending the same email twice should fail on the second attempt."""
         mock_fetch.return_value = TECHNOVA_EMAIL
-        fake_redis = FakeRedis()
+        fake_cache = FakeCache()
 
         with (
-            patch("src.services.email_intake.get_value", side_effect=fake_redis.get_value),
-            patch("src.services.email_intake.set_with_ttl", side_effect=fake_redis.set_with_ttl),
+            patch("src.services.email_intake.get_value", side_effect=fake_cache.get_value),
+            patch("src.services.email_intake.set_with_ttl", side_effect=fake_cache.set_with_ttl),
         ):
             from src.services.email_intake import process_email_notification
             from src.utils.exceptions import DuplicateQueryError
@@ -413,20 +413,20 @@ class TestEmailIntakeEndToEnd:
     @pytest.mark.asyncio
     @patch("src.services.email_intake.resolve_vendor", side_effect=_mock_resolve_vendor)
     @patch("src.services.email_intake.fetch_email_by_resource", new_callable=AsyncMock)
-    async def test_redis_down_still_processes_email(self, mock_fetch, mock_vendor, aws_infra):
-        """If Redis is unavailable, email should still process successfully."""
+    async def test_cache_down_still_processes_email(self, mock_fetch, mock_vendor, aws_infra):
+        """If cache is unavailable, email should still process successfully."""
         mock_fetch.return_value = TECHNOVA_EMAIL
 
         with (
             patch(
                 "src.services.email_intake.get_value",
                 new_callable=AsyncMock,
-                side_effect=ConnectionError("Redis connection refused"),
+                side_effect=ConnectionError("Cache connection refused"),
             ),
             patch(
                 "src.services.email_intake.set_with_ttl",
                 new_callable=AsyncMock,
-                side_effect=ConnectionError("Redis connection refused"),
+                side_effect=ConnectionError("Cache connection refused"),
             ),
         ):
             from src.services.email_intake import process_email_notification
@@ -454,12 +454,12 @@ class TestEmailIntakeEndToEnd:
     async def test_correlation_id_propagated_to_sqs_message(self, mock_fetch, mock_vendor, aws_infra):
         """A provided correlation_id should appear in the SQS message payload."""
         mock_fetch.return_value = TECHNOVA_EMAIL
-        fake_redis = FakeRedis()
+        fake_cache = FakeCache()
         custom_correlation = "custom-corr-id-12345"
 
         with (
-            patch("src.services.email_intake.get_value", side_effect=fake_redis.get_value),
-            patch("src.services.email_intake.set_with_ttl", side_effect=fake_redis.set_with_ttl),
+            patch("src.services.email_intake.get_value", side_effect=fake_cache.get_value),
+            patch("src.services.email_intake.set_with_ttl", side_effect=fake_cache.set_with_ttl),
         ):
             from src.services.email_intake import process_email_notification
 
@@ -494,11 +494,11 @@ class TestWebhookEndToEnd:
     async def test_webhook_notification_processes_email(self, mock_fetch, mock_vendor, aws_infra):
         """POST /webhooks/ms-graph with a change notification → accepted."""
         mock_fetch.return_value = TECHNOVA_EMAIL
-        fake_redis = FakeRedis()
+        fake_cache = FakeCache()
 
         with (
-            patch("src.services.email_intake.get_value", side_effect=fake_redis.get_value),
-            patch("src.services.email_intake.set_with_ttl", side_effect=fake_redis.set_with_ttl),
+            patch("src.services.email_intake.get_value", side_effect=fake_cache.get_value),
+            patch("src.services.email_intake.set_with_ttl", side_effect=fake_cache.set_with_ttl),
         ):
             from main import app
 
@@ -560,11 +560,11 @@ class TestWebhookEndToEnd:
     ):
         """If a notification batch contains a duplicate, it should not fail the whole batch."""
         mock_fetch.return_value = TECHNOVA_EMAIL
-        fake_redis = FakeRedis()
+        fake_cache = FakeCache()
 
         with (
-            patch("src.services.email_intake.get_value", side_effect=fake_redis.get_value),
-            patch("src.services.email_intake.set_with_ttl", side_effect=fake_redis.set_with_ttl),
+            patch("src.services.email_intake.get_value", side_effect=fake_cache.get_value),
+            patch("src.services.email_intake.set_with_ttl", side_effect=fake_cache.set_with_ttl),
         ):
             from main import app
 

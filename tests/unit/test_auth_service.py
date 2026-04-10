@@ -1,7 +1,7 @@
 """Tests for the authentication service.
 
 Tests JWT creation, validation, blacklisting, and token refresh.
-Database and Redis are mocked — no real connections needed.
+Database and cache are mocked — no real connections needed.
 """
 
 from __future__ import annotations
@@ -94,12 +94,8 @@ class TestValidateToken:
     @pytest.mark.asyncio(loop_scope="function")
     async def test_valid_token_returns_payload(self, mock_settings, sample_token):
         """A valid, non-blacklisted token should return TokenPayload."""
-        mock_redis = AsyncMock()
-        mock_redis.exists = AsyncMock(return_value=0)
-
         with (
             patch("src.services.auth.get_settings", return_value=mock_settings),
-            patch("src.services.auth.get_redis_client", return_value=mock_redis),
             patch("src.services.auth.exists_key", new_callable=AsyncMock, return_value=False),
         ):
             result = await validate_token(sample_token)
@@ -140,11 +136,8 @@ class TestValidateToken:
     @pytest.mark.asyncio(loop_scope="function")
     async def test_blacklisted_token_returns_none(self, mock_settings, sample_token):
         """A blacklisted token should return None."""
-        mock_redis = AsyncMock()
-
         with (
             patch("src.services.auth.get_settings", return_value=mock_settings),
-            patch("src.services.auth.get_redis_client", return_value=mock_redis),
             patch("src.services.auth.exists_key", new_callable=AsyncMock, return_value=True),
         ):
             result = await validate_token(sample_token)
@@ -156,13 +149,10 @@ class TestBlacklistToken:
     """Tests for blacklist_token()."""
 
     @pytest.mark.asyncio(loop_scope="function")
-    async def test_blacklists_token_in_redis(self, mock_settings, sample_token):
-        """Blacklisting should store the JTI in Redis."""
-        mock_redis = AsyncMock()
-
+    async def test_blacklists_token_in_cache(self, mock_settings, sample_token):
+        """Blacklisting should store the JTI in the cache."""
         with (
             patch("src.services.auth.get_settings", return_value=mock_settings),
-            patch("src.services.auth.get_redis_client", return_value=mock_redis),
             patch("src.services.auth.set_with_ttl", new_callable=AsyncMock) as mock_set,
         ):
             await blacklist_token(sample_token)
@@ -215,11 +205,8 @@ class TestRefreshTokenIfExpiring:
             jti="old-jti",
         )
 
-        mock_redis = AsyncMock()
-
         with (
             patch("src.services.auth.get_settings", return_value=mock_settings),
-            patch("src.services.auth.get_redis_client", return_value=mock_redis),
             patch("src.services.auth.set_with_ttl", new_callable=AsyncMock),
         ):
             new_token = await refresh_token_if_expiring(payload)

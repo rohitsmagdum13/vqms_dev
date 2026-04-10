@@ -24,7 +24,7 @@ CREATE TABLE audit.action_log (
     actor           VARCHAR(128) NOT NULL,             -- Service name, agent name, or user ID
     action          VARCHAR(128) NOT NULL,             -- What happened (e.g., 'email_parsed', 'draft_created')
     details         JSONB DEFAULT '{}',                -- Additional context as JSON
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at      TIMESTAMP NOT NULL DEFAULT (now() AT TIME ZONE 'Asia/Kolkata')
 );
 
 -- validation_results: Records the outcome of every Quality Gate check.
@@ -39,7 +39,7 @@ CREATE TABLE audit.validation_results (
     warnings        JSONB NOT NULL DEFAULT '[]',       -- Non-blocking warnings
     pii_detected    BOOLEAN NOT NULL DEFAULT FALSE,    -- True if PII found (blocks sending)
     redraft_count   INTEGER NOT NULL DEFAULT 0,        -- How many re-drafts attempted (max 2)
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at      TIMESTAMP NOT NULL DEFAULT (now() AT TIME ZONE 'Asia/Kolkata')
 );
 
 -- Indexes for common audit queries

@@ -1,7 +1,7 @@
 """Memory and Context Service for VQMS (Step 7.3 and 7.4).
 
 Loads the context that agents need before analyzing a query:
-  - Vendor profile from Redis cache (1h TTL) or Salesforce CRM
+  - Vendor profile from PostgreSQL cache (1h TTL) or Salesforce CRM
   - Vendor query history from PostgreSQL episodic_memory table
 
 This corresponds to Sub-Steps 7.3 and 7.4 in the VQMS Solution
@@ -17,7 +17,7 @@ import logging
 from sqlalchemy import text
 
 from src.adapters.salesforce import SalesforceAdapterError, get_salesforce_adapter
-from src.cache.redis_client import get_value, set_with_ttl, vendor_key
+from src.cache.pg_cache import get_value, set_with_ttl, vendor_key
 from src.db.connection import get_engine
 from src.models.vendor import VendorProfile, VendorTier
 from src.utils.log_context import LogContext
@@ -31,9 +31,9 @@ async def load_vendor_profile(
     *,
     correlation_id: str | None = None,
 ) -> VendorProfile | None:
-    """Load a vendor profile from Redis cache or Salesforce CRM.
+    """Load a vendor profile from PostgreSQL cache or Salesforce CRM.
 
-    Sub-Step 7.3: Check Redis first. On cache miss, query Salesforce
+    Sub-Step 7.3: Check cache first. On cache miss, query Salesforce
     and cache the result for 1 hour.
 
     Args:
@@ -60,29 +60,29 @@ async def load_vendor_profile(
         )
         return None
 
-    # Step 1: Check Redis cache
+    # Step 1: Check PostgreSQL cache
     key, ttl = vendor_key(vendor_id)
     try:
         cached_json = await get_value(key)
         if cached_json:
             logger.info(
                 "Vendor profile cache HIT",
-                extra={**ctx.with_update(tool="redis").to_dict(), "vendor_id": vendor_id},
+                extra={**ctx.with_update(tool="pg_cache").to_dict(), "vendor_id": vendor_id},
             )
             cached_data = json.loads(cached_json)
             return VendorProfile(**cached_data)
     except Exception:
-        # Redis failure is non-fatal — fall through to Salesforce
+        # Cache failure is non-fatal — fall through to Salesforce
         logger.warning(
-            "Redis cache read failed — falling through to Salesforce",
-            extra={**ctx.with_update(tool="redis").to_dict(), "vendor_id": vendor_id},
+            "Cache read failed — falling through to Salesforce",
+            extra={**ctx.with_update(tool="pg_cache").to_dict(), "vendor_id": vendor_id},
             exc_info=True,
         )
 
     # Step 2: Query Salesforce
     logger.info(
         "Vendor profile cache MISS — querying Salesforce",
-        extra={**ctx.with_update(tool="salesforce").to_dict(), "vendor_id": vendor_id},
+        extra={**ctx.to_dict(), "vendor_id": vendor_id},
     )
 
     try:
@@ -117,22 +117,22 @@ async def load_vendor_profile(
         # Map Salesforce data to VendorProfile
         profile = _map_to_vendor_profile(account, vendor_id, sender_email)
 
-        # Step 3: Cache in Redis
+        # Step 3: Cache in PostgreSQL
         try:
             profile_json = profile.model_dump_json()
             await set_with_ttl(key, profile_json, ttl)
             logger.info(
-                "Vendor profile cached in Redis",
+                "Vendor profile cached",
                 extra={
-                    **ctx.with_update(tool="redis").to_dict(),
+                    **ctx.with_update(tool="pg_cache").to_dict(),
                     "vendor_id": vendor_id,
                     "ttl_seconds": ttl,
                 },
             )
         except Exception:
             logger.warning(
-                "Failed to cache vendor profile in Redis",
-                extra={**ctx.with_update(tool="redis").to_dict(), "vendor_id": vendor_id},
+                "Failed to cache vendor profile",
+                extra={**ctx.with_update(tool="pg_cache").to_dict(), "vendor_id": vendor_id},
                 exc_info=True,
             )
 

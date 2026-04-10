@@ -2,7 +2,7 @@
 
 Tests skip-path logic, token validation flow, and user context
 population on request.state. Uses mocked auth service — no
-real JWT or Redis needed.
+real JWT or database needed.
 """
 
 from __future__ import annotations

@@ -35,7 +35,6 @@ dependencies = [
     "python-jose[cryptography]>=3.5.0",
     "python-multipart>=0.0.24",
     "pyyaml>=6.0.3",
-    "redis[hiredis]>=7.4.0",
     "requests>=2.33.1",
     "simple-salesforce>=1.12.9",
     "sqlalchemy[asyncio]>=2.0.49",
@@ -54,7 +53,6 @@ testpaths = ["tests"]
 [dependency-groups]
 dev = [
     "black>=26.3.1",
-    "fakeredis>=2.34.1",
     "isort>=8.0.1",
     "moto[events,s3,sqs,stepfunctions]>=5.1.22",
     "mypy>=1.20.0",

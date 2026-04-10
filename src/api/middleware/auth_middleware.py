@@ -42,7 +42,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
     For every request (except skip paths):
       1. Extracts Bearer token from Authorization header
-      2. Validates the JWT and checks Redis blacklist
+      2. Validates the JWT and checks token blacklist
       3. Sets request.state: username, role, tenant, is_authenticated
       4. After the route handler runs, checks if the token needs
          refresh and adds X-New-Token header if so

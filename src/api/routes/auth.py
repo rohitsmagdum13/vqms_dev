@@ -71,7 +71,7 @@ async def login(request_body: LoginRequest) -> LoginResponse:
 async def logout(request: Request) -> dict:
     """Log out by blacklisting the current JWT token.
 
-    Adds the token's JTI to the Redis blacklist so any
+    Adds the token's JTI to the cache blacklist so any
     subsequent request with this token is rejected by the
     auth middleware. The blacklist entry auto-expires when
     the JWT would have expired naturally.

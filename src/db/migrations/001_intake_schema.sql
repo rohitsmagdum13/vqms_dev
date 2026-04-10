@@ -29,11 +29,11 @@ CREATE TABLE intake.email_messages (
     body_text       TEXT,                             -- Plain text body
     body_html       TEXT,                             -- HTML body (kept for reference)
     raw_s3_key      VARCHAR(1024),                    -- S3 key for raw .eml file (compliance)
-    received_at     TIMESTAMPTZ NOT NULL,             -- When Exchange Online received it
+    received_at     TIMESTAMP NOT NULL,                -- When Exchange Online received it (IST)
     correlation_id  VARCHAR(36) NOT NULL,             -- UUID4 tracing ID
     query_id        VARCHAR(20) NOT NULL,             -- VQ-2026-XXXX format
     execution_id    VARCHAR(36) NOT NULL,             -- UUID4 workflow execution ID
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at      TIMESTAMP NOT NULL DEFAULT (now() AT TIME ZONE 'Asia/Kolkata')
 );
 
 -- email_attachments: One row per attachment on an email.
@@ -46,7 +46,7 @@ CREATE TABLE intake.email_attachments (
     size_bytes      BIGINT,
     s3_key          VARCHAR(1024),                    -- S3 key in vqms-email-attachments-prod
     checksum        VARCHAR(128),                     -- SHA-256 for integrity checks
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at      TIMESTAMP NOT NULL DEFAULT (now() AT TIME ZONE 'Asia/Kolkata')
 );
 
 -- Indexes for common query patterns

@@ -2,8 +2,8 @@
 
 Sub-Steps 7.1 through 7.4 from the Solution Flow Document:
   7.1 — Update case_execution status to ANALYZING
-  7.2 — Cache workflow state in Redis (24h TTL)
-  7.3 — Load vendor profile (Redis cache → Salesforce CRM)
+  7.2 — (Status already persisted in PostgreSQL case_execution)
+  7.3 — Load vendor profile (PostgreSQL cache → Salesforce CRM)
   7.4 — Load vendor history (PostgreSQL episodic_memory)
 
 Output: Populated context with vendor_profile and vendor_history
@@ -12,13 +12,11 @@ added to the graph state.
 
 from __future__ import annotations
 
-import json
 import logging
 
 from sqlalchemy import text
 
 from config.settings import get_settings
-from src.cache.redis_client import set_with_ttl, workflow_key
 from src.db.connection import get_engine
 from src.models.budget import Budget
 from src.services.memory_context import load_vendor_history, load_vendor_profile
@@ -63,14 +61,7 @@ async def context_loading(state: dict) -> dict:
     # --- Sub-Step 7.1: Update status to ANALYZING ---
     await _update_case_status(execution_id, "analyzing", correlation_id=correlation_id)
 
-    # --- Sub-Step 7.2: Cache workflow state in Redis ---
-    await _cache_workflow_state(
-        execution_id=execution_id,
-        query_id=query_id,
-        vendor_id=vendor_id,
-        step="CONTEXT_LOADING",
-        correlation_id=correlation_id,
-    )
+    # --- Sub-Step 7.2: Status already persisted in PostgreSQL above ---
 
     # --- Sub-Step 7.3: Load vendor profile ---
     vendor_profile = await load_vendor_profile(
@@ -134,12 +125,13 @@ async def _update_case_status(
 
     sql = text(
         "UPDATE workflow.case_execution "
-        "SET status = :status, updated_at = NOW() "
+        "SET status = :status, updated_at = :now_ist "
         "WHERE execution_id = :execution_id"
     )
     try:
         async with engine.begin() as conn:
-            await conn.execute(sql, {"status": status, "execution_id": execution_id})
+            from src.utils.helpers import ist_now
+            await conn.execute(sql, {"status": status, "execution_id": execution_id, "now_ist": ist_now()})
     except Exception:
         logger.error(
             "Failed to update case_execution status",
@@ -148,32 +140,6 @@ async def _update_case_status(
                 "status": status,
                 "correlation_id": correlation_id,
             },
-            exc_info=True,
-        )
-
-
-async def _cache_workflow_state(
-    *,
-    execution_id: str,
-    query_id: str,
-    vendor_id: str | None,
-    step: str,
-    correlation_id: str | None = None,
-) -> None:
-    """Cache workflow state in Redis for fast status lookups."""
-    key, ttl = workflow_key(execution_id)
-    state_data = json.dumps({
-        "status": "analyzing",
-        "query_id": query_id,
-        "vendor_id": vendor_id,
-        "step": step,
-    })
-    try:
-        await set_with_ttl(key, state_data, ttl)
-    except Exception:
-        logger.warning(
-            "Failed to cache workflow state in Redis",
-            extra={"execution_id": execution_id, "correlation_id": correlation_id},
             exc_info=True,
         )
 

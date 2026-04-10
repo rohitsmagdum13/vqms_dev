@@ -29,13 +29,13 @@ CREATE TABLE memory.episodic_memory (
     query_id        VARCHAR(20) NOT NULL,              -- Which query this memory relates to
     summary         TEXT NOT NULL,                     -- Brief description of query and resolution
     resolution_path VARCHAR(1),                        -- A, B, or C
-    resolved_at     TIMESTAMPTZ,
+    resolved_at     TIMESTAMP,
     metadata        JSONB DEFAULT '{}',                -- Extra context: category, urgency, satisfaction
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at      TIMESTAMP NOT NULL DEFAULT (now() AT TIME ZONE 'Asia/Kolkata')
 );
 
--- vendor_profile_cache: PostgreSQL backup of Redis-cached vendor data.
--- Primary cache is Redis (1-hour TTL). On cache miss, we check this
+-- vendor_profile_cache: Cached vendor data from Salesforce.
+-- Primary cache is cache.kv_store (1-hour TTL). On cache miss, we check this
 -- table before hitting Salesforce API.
 CREATE TABLE memory.vendor_profile_cache (
     id              BIGSERIAL PRIMARY KEY,
@@ -43,7 +43,7 @@ CREATE TABLE memory.vendor_profile_cache (
     vendor_name     VARCHAR(256) NOT NULL,
     vendor_tier     VARCHAR(20) NOT NULL DEFAULT 'standard',
     profile_data    JSONB DEFAULT '{}',                -- Full profile: email, manager, risk flags, etc.
-    cached_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    cached_at       TIMESTAMP NOT NULL DEFAULT (now() AT TIME ZONE 'Asia/Kolkata'),
     ttl_seconds     INTEGER NOT NULL DEFAULT 3600      -- 1 hour default
 );
 
@@ -57,7 +57,7 @@ CREATE TABLE memory.embedding_index (
     chunk_text      TEXT NOT NULL,                     -- Text content of this chunk
     embedding       vector(1536),                      -- Titan Embed v2 produces 1536-dim vectors
     metadata        JSONB DEFAULT '{}',                -- category, chunk_index, document_id, etc.
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at      TIMESTAMP NOT NULL DEFAULT (now() AT TIME ZONE 'Asia/Kolkata')
 );
 
 -- Indexes

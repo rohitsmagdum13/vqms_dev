@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 
 from src.models.vendor import VendorTier
 from src.models.workflow import UrgencyLevel
-from src.utils.helpers import utc_now
+from src.utils.helpers import ist_now
 
 
 class TicketRecord(BaseModel):
@@ -47,8 +47,8 @@ class TicketRecord(BaseModel):
     sla_target_hours: float = Field(
         description="SLA target in hours based on vendor tier + urgency",
     )
-    created_at: datetime = Field(default_factory=utc_now)
-    updated_at: datetime = Field(default_factory=utc_now)
+    created_at: datetime = Field(default_factory=ist_now)
+    updated_at: datetime = Field(default_factory=ist_now)
 
 
 class TicketLink(BaseModel):
@@ -64,7 +64,7 @@ class TicketLink(BaseModel):
     link_type: str = Field(
         description="Relationship type: CREATED, UPDATED, or REOPENED",
     )
-    created_at: datetime = Field(default_factory=utc_now)
+    created_at: datetime = Field(default_factory=ist_now)
 
 
 class RoutingDecision(BaseModel):
@@ -105,4 +105,4 @@ class RoutingDecision(BaseModel):
         default_factory=list,
         description="Vendor risk flags that influenced routing",
     )
-    created_at: datetime = Field(default_factory=utc_now)
+    created_at: datetime = Field(default_factory=ist_now)

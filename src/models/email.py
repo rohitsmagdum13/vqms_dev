@@ -17,7 +17,7 @@ from datetime import datetime
 from pydantic import BaseModel, EmailStr, Field
 
 from src.models.vendor import VendorMatch
-from src.utils.helpers import utc_now
+from src.utils.helpers import ist_now
 
 
 class EmailAttachment(BaseModel):
@@ -163,4 +163,4 @@ class ParsedEmailPayload(BaseModel):
         default=False,
         description="True if this message_id was already processed (idempotency check)",
     )
-    created_at: datetime = Field(default_factory=utc_now)
+    created_at: datetime = Field(default_factory=ist_now)

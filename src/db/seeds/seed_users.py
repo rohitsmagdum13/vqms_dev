@@ -22,6 +22,8 @@ import asyncio
 from datetime import datetime
 
 from sqlalchemy import text
+
+from src.utils.helpers import IST
 from werkzeug.security import generate_password_hash
 
 from src.db.connection import get_engine, init_db, start_ssh_tunnel
@@ -148,7 +150,7 @@ async def seed_users() -> None:
     # Runs the same DDL as migration 007 (CREATE TABLE IF NOT EXISTS)
     await _ensure_auth_tables_exist(engine)
 
-    now = datetime.utcnow()  # noqa: DTZ003 — naive datetime to match TIMESTAMP column
+    now = datetime.now(IST).replace(tzinfo=None)  # naive IST to match TIMESTAMP column
     created_count = 0
 
     async with engine.begin() as conn:

@@ -13,13 +13,14 @@ from __future__ import annotations
 import asyncio
 import sys
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime
+
+from src.utils.helpers import IST
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from config.settings import get_settings
-from src.cache.redis_client import init_redis
 from src.db.connection import init_db, start_ssh_tunnel
 from src.orchestration.graph import PipelineState, build_pipeline_graph
 from src.utils.logger import setup_logging
@@ -48,7 +49,7 @@ def _build_test_payload() -> dict:
         "query_type": "billing",
         "priority": "high",
         "reference_number": "INV-2026-0451",
-        "received_at": datetime.now(UTC).isoformat(),
+        "received_at": datetime.now(IST).isoformat(),
     }
 
 
@@ -83,19 +84,6 @@ async def main() -> None:
         print("  PostgreSQL: connected")
     except Exception as e:
         print(f"  PostgreSQL: FAILED — {e}")
-
-    # Redis
-    try:
-        await init_redis(
-            host=settings.redis_host,
-            port=settings.redis_port,
-            password=settings.redis_password,
-            db=settings.redis_db,
-            ssl=settings.redis_ssl,
-        )
-        print("  Redis: connected")
-    except Exception as e:
-        print(f"  Redis: FAILED — {e}")
 
     # --- Build test payload ---
     print("\n[2/5] Building test payload...")

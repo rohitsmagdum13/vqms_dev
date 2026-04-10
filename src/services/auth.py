@@ -2,8 +2,8 @@
 
 Handles user login, logout, JWT token management, and session
 control. Replaces the local_vqm auth logic with VQMS-standard
-patterns: async DB via get_engine(), Redis-based token blacklist,
-structured logging, and correlation IDs.
+patterns: async DB via get_engine(), PostgreSQL-based token
+blacklist, structured logging, and correlation IDs.
 
 Database: Queries public.tbl_users and public.tbl_user_roles
 via raw SQL (same pattern as portal_submission.py).
@@ -12,7 +12,7 @@ Password hashing: Uses werkzeug.security.check_password_hash
 to verify passwords — compatible with existing hashed passwords
 in tbl_users created by the local_vqm backend.
 
-Token blacklist: Uses Redis instead of local_vqm's in-memory set.
+Token blacklist: Uses PostgreSQL cache table (cache.kv_store).
 Key pattern: vqms:auth:blacklist:<jti> with TTL matching JWT lifetime.
 """
 
@@ -27,10 +27,9 @@ from sqlalchemy import text
 from werkzeug.security import check_password_hash
 
 from config.settings import get_settings
-from src.cache.redis_client import (
+from src.cache.pg_cache import (
     auth_blacklist_key,
     exists_key,
-    get_redis_client,
     set_with_ttl,
 )
 from src.db.connection import get_engine
@@ -60,8 +59,7 @@ async def authenticate_user(
 
     Queries public.tbl_users to find the user, verifies the
     password hash with werkzeug, then queries public.tbl_user_roles
-    for the user's role. Creates a JWT and caches session data
-    in Redis.
+    for the user's role. Creates a JWT.
 
     Args:
         username_or_email: The username or email to log in with.
@@ -228,7 +226,7 @@ async def validate_token(token: str) -> TokenPayload | None:
 
     Checks:
       1. Token is valid and not expired (jose handles this)
-      2. Token's JTI is not in the Redis blacklist (logout check)
+      2. Token's JTI is not in the cache blacklist (logout check)
 
     Args:
         token: The raw JWT string from the Authorization header.
@@ -254,20 +252,18 @@ async def validate_token(token: str) -> TokenPayload | None:
         return None
 
     # Check if token has been blacklisted (user logged out)
-    redis_client = get_redis_client()
-    if redis_client is not None:
-        try:
-            blacklist_key, _ttl = auth_blacklist_key(payload["jti"])
-            is_blacklisted = await exists_key(blacklist_key)
-            if is_blacklisted:
-                return None
-        except Exception:
-            # If Redis is down, we allow the token through rather
-            # than blocking all authenticated requests
-            logger.warning(
-                "Redis unavailable for blacklist check — allowing token",
-                extra={"jti": payload["jti"]},
-            )
+    try:
+        blacklist_key, _ttl = auth_blacklist_key(payload["jti"])
+        is_blacklisted = await exists_key(blacklist_key)
+        if is_blacklisted:
+            return None
+    except Exception:
+        # If the database is down, we allow the token through rather
+        # than blocking all authenticated requests
+        logger.warning(
+            "Cache unavailable for blacklist check — allowing token",
+            extra={"jti": payload["jti"]},
+        )
 
     return TokenPayload(
         sub=payload["sub"],
@@ -285,12 +281,12 @@ async def blacklist_token(
     *,
     correlation_id: str | None = None,
 ) -> None:
-    """Add a token to the Redis blacklist (logout).
+    """Add a token to the cache blacklist (logout).
 
     Decodes the token to extract the JTI, then stores it in
-    Redis with a TTL matching the JWT lifetime. After the
-    token would have expired naturally, the blacklist entry
-    is automatically cleaned up by Redis.
+    the PostgreSQL cache with a TTL matching the JWT lifetime.
+    After the token would have expired naturally, the blacklist
+    entry is cleaned up by the periodic cache cleanup task.
 
     Args:
         token: The raw JWT string to blacklist.
@@ -315,9 +311,8 @@ async def blacklist_token(
     if not jti:
         raise AuthenticationError("Token has no JTI claim")
 
-    # Store in Redis blacklist
-    redis_client = get_redis_client()
-    if redis_client is not None:
+    # Store in cache blacklist
+    try:
         key, ttl = auth_blacklist_key(jti)
         await set_with_ttl(key, "blacklisted", ttl)
         logger.info(
@@ -328,10 +323,10 @@ async def blacklist_token(
                 "correlation_id": correlation_id,
             },
         )
-    else:
-        # Redis down — log warning but don't fail logout
+    except Exception:
+        # Cache unavailable — log warning but don't fail logout
         logger.warning(
-            "Redis unavailable — token blacklist skipped",
+            "Cache unavailable — token blacklist skipped",
             extra={
                 "jti": jti,
                 "correlation_id": correlation_id,
@@ -369,16 +364,14 @@ async def refresh_token_if_expiring(
     )
 
     # Blacklist the old token's JTI so it cannot be reused
-    redis_client = get_redis_client()
-    if redis_client is not None:
-        try:
-            key, ttl = auth_blacklist_key(payload.jti)
-            await set_with_ttl(key, "refreshed", ttl)
-        except Exception:
-            logger.warning(
-                "Redis unavailable — old token JTI not blacklisted after refresh",
-                extra={"jti": payload.jti},
-            )
+    try:
+        key, ttl = auth_blacklist_key(payload.jti)
+        await set_with_ttl(key, "refreshed", ttl)
+    except Exception:
+        logger.warning(
+            "Cache unavailable — old token JTI not blacklisted after refresh",
+            extra={"jti": payload.jti},
+        )
 
     logger.info(
         "Token refreshed",

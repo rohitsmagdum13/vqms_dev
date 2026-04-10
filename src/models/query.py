@@ -16,7 +16,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 from src.models.workflow import Priority, QuerySource, QueryType
-from src.utils.helpers import utc_now
+from src.utils.helpers import ist_now
 
 
 class QuerySubmission(BaseModel):
@@ -110,4 +110,4 @@ class UnifiedQueryPayload(BaseModel):
     )
 
     # Metadata
-    received_at: datetime = Field(default_factory=utc_now)
+    received_at: datetime = Field(default_factory=ist_now)

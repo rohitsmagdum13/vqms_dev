@@ -9,7 +9,7 @@ management UI, merged from local_vqm).
 
 Corresponds to:
   - memory.vendor_profile_cache table in PostgreSQL
-  - vqms:vendor:<vendor_id> Redis key family (1-hour TTL)
+  - cache.kv_store with key vqms:vendor:<vendor_id> (1-hour TTL)
   - Steps E2.5 (email vendor identification) and 7.3 (context loading)
   - GET /vendors and PUT /vendors/{vendor_id} API endpoints
 """

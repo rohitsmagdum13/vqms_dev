@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import datetime
+
+from src.utils.helpers import IST
 
 import boto3
 from botocore.exceptions import ClientError
@@ -63,7 +65,7 @@ async def publish_event(
     enriched_detail = {
         **detail,
         "correlation_id": correlation_id,
-        "time": datetime.now(UTC).isoformat(),
+        "time": datetime.now(IST).isoformat(),
     }
 
     try:

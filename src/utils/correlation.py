@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import random
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime
+
+from src.utils.helpers import IST
 
 
 def generate_correlation_id() -> str:
@@ -60,6 +62,6 @@ def generate_query_id(prefix: str = "VQ") -> str:
     Returns:
         A string like 'VQ-2026-0451'.
     """
-    year = datetime.now(UTC).strftime("%Y")
+    year = datetime.now(IST).strftime("%Y")
     sequence = random.randint(0, 9999)  # noqa: S311 — not used for security
     return f"{prefix}-{year}-{sequence:04d}"

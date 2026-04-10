@@ -1,7 +1,7 @@
 """VQMS Pipeline Runner — starts FastAPI server + SQS consumer.
 
 Runs the full VQMS pipeline:
-  1. Bootstraps infrastructure (SSH tunnel, DB, Redis)
+  1. Bootstraps infrastructure (SSH tunnel, DB)
   2. Starts the SQS consumer as a background task
   3. Starts the FastAPI server on the configured port
 
@@ -50,7 +50,6 @@ def parse_args() -> argparse.Namespace:
 
 async def run_consumer_standalone() -> None:
     """Run the SQS consumer as a standalone process."""
-    from src.cache.redis_client import init_redis
     from src.db.connection import init_db, start_ssh_tunnel
     from src.orchestration.sqs_consumer import start_consumer
 
@@ -78,17 +77,6 @@ async def run_consumer_standalone() -> None:
         await init_db(db_url, pool_min=2, pool_max=5)
     except Exception:
         logger.warning("Could not connect to PostgreSQL", exc_info=True)
-
-    try:
-        await init_redis(
-            host=settings.redis_host,
-            port=settings.redis_port,
-            password=settings.redis_password,
-            db=settings.redis_db,
-            ssl=settings.redis_ssl,
-        )
-    except Exception:
-        logger.warning("Could not connect to Redis", exc_info=True)
 
     # Run consumer (infinite loop)
     shutdown_event = asyncio.Event()

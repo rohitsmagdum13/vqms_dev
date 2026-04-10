@@ -1,6 +1,6 @@
 """Tests for the portal submission service.
 
-Tests the full portal intake flow with mocked Redis, SQS, and EventBridge.
+Tests the full portal intake flow with mocked cache, SQS, and EventBridge.
 Verifies that the service produces the correct output, publishes
 events, and enqueues messages correctly.
 """
@@ -107,11 +107,11 @@ class TestPortalSubmission:
     @pytest.mark.asyncio
     @patch("src.services.portal_submission.publish", new_callable=AsyncMock, return_value="msg-001")
     @patch("src.services.portal_submission.publish_event", new_callable=AsyncMock, return_value="evt-001")
-    @patch("src.services.portal_submission.get_value", new_callable=AsyncMock, side_effect=ConnectionError("Redis down"))
-    async def test_redis_failure_allows_submission(
+    @patch("src.services.portal_submission.get_value", new_callable=AsyncMock, side_effect=ConnectionError("Cache down"))
+    async def test_cache_failure_allows_submission(
         self, mock_get, mock_event, mock_sqs, sample_submission
     ):
-        """If Redis is down, submission should still proceed."""
+        """If cache is down, submission should still proceed."""
         result = await submit_portal_query(
             submission=sample_submission,
             vendor_id="SF-001",

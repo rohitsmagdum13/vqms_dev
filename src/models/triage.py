@@ -22,7 +22,7 @@ from src.models.query import UnifiedQueryPayload
 from src.models.ticket import RoutingDecision
 from src.models.vendor import VendorMatch
 from src.models.workflow import AnalysisResult
-from src.utils.helpers import utc_now
+from src.utils.helpers import ist_now
 
 
 class ReviewStatus(str):
@@ -99,7 +99,7 @@ class TriagePackage(BaseModel):
     )
 
     # Timestamps
-    created_at: datetime = Field(default_factory=utc_now)
+    created_at: datetime = Field(default_factory=ist_now)
     reviewed_at: datetime | None = Field(
         default=None,
         description="When the review was submitted",

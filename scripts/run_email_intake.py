@@ -3,7 +3,7 @@
 
 This script exercises the REAL pipeline with REAL cloud services:
   - Microsoft Graph API (fetch latest email from shared mailbox)
-  - Redis (idempotency check)
+  - PostgreSQL cache (idempotency check)
   - Salesforce stub (vendor resolution)
   - AWS S3 (store raw email)
   - PostgreSQL via SSH tunnel or direct connection (CaseExecution write)
@@ -21,8 +21,7 @@ Prerequisites:
   1. Copy .env.copy to .env and fill in real values
   2. Graph API credentials configured (GRAPH_API_TENANT_ID, CLIENT_ID, etc.)
   3. AWS credentials configured (S3, SQS, EventBridge access)
-  4. Redis running (local or cloud)
-  5. PostgreSQL reachable (SSH tunnel to RDS or direct connection)
+  4. PostgreSQL reachable (SSH tunnel to RDS or direct connection)
 """
 
 from __future__ import annotations
@@ -54,11 +53,9 @@ from src.adapters.graph_api import (
     fetch_email_by_resource,
     fetch_latest_email,
 )
-from src.cache.redis_client import (
-    close_redis,
+from src.cache.pg_cache import (
     get_value,
     idempotency_key,
-    init_redis,
     set_with_ttl,
 )
 from src.db.connection import (
@@ -85,7 +82,7 @@ from src.utils.correlation import (
     generate_execution_id,
     generate_query_id,
 )
-from src.utils.helpers import utc_now
+from src.utils.helpers import ist_now
 from src.utils.logger import setup_logging
 
 # ---------------------------------------------------------------------------
@@ -151,21 +148,6 @@ async def check_prerequisites(settings) -> dict[str, bool]:
     else:
         checks["graph_api"] = False
         print_result("Graph API", "[FAIL] Not configured (GRAPH_API_TENANT_ID, GRAPH_API_CLIENT_ID)")
-
-    # --- Redis ---
-    try:
-        await init_redis(
-            host=settings.redis_host,
-            port=settings.redis_port,
-            password=settings.redis_password,
-            db=settings.redis_db,
-            ssl=settings.redis_ssl,
-        )
-        checks["redis"] = True
-        print_result("Redis", f"[OK] Connected ({settings.redis_host}:{settings.redis_port})")
-    except Exception as e:
-        checks["redis"] = False
-        print_result("Redis", f"[FAIL] Not available ({e})")
 
     # --- S3 (raw email bucket) ---
     try:
@@ -341,24 +323,27 @@ async def run_pipeline(*, resource: str | None):
         print_result("Preview", email.body_preview[:100] + "..." if len(email.body_preview) > 100 else email.body_preview)
 
     # =====================================================================
-    # STEP 2: Idempotency check (Redis)
+    # STEP 2: Idempotency check (PostgreSQL cache)
     # =====================================================================
-    print_step(2, "Idempotency check (Redis)")
+    print_step(2, "Idempotency check (PostgreSQL cache)")
 
     is_duplicate = False
-    if checks.get("redis"):
+    if checks.get("postgres"):
         key, ttl = idempotency_key(f"email:{email.message_id}")
-        existing = await get_value(key)
-        if existing is not None:
-            is_duplicate = True
-            print_result("Result", f"[DUPLICATE] key '{key}' already exists")
-            print_result("", "In production this would raise DuplicateQueryError")
-        else:
-            await set_with_ttl(key, "1", ttl)
-            print_result("Result", f"[OK] New email -- idempotency key set (TTL: {ttl}s)")
-            print_result("Key", key)
+        try:
+            existing = await get_value(key)
+            if existing is not None:
+                is_duplicate = True
+                print_result("Result", f"[DUPLICATE] key '{key}' already exists")
+                print_result("", "In production this would raise DuplicateQueryError")
+            else:
+                await set_with_ttl(key, "1", ttl)
+                print_result("Result", f"[OK] New email -- idempotency key set (TTL: {ttl}s)")
+                print_result("Key", key)
+        except Exception as e:
+            print_result("Result", f"[WARN] Cache check failed ({e}), skipping idempotency")
     else:
-        print_result("Result", "[WARN] Redis unavailable, skipping idempotency check")
+        print_result("Result", "[WARN] Database unavailable, skipping idempotency check")
 
     # =====================================================================
     # STEP 3: Vendor resolution (Salesforce)
@@ -490,7 +475,7 @@ async def run_pipeline(*, resource: str | None):
         reference_number=None,
         thread_status=thread_status,
         message_id=email.message_id,
-        received_at=email.received_at or utc_now(),
+        received_at=email.received_at or ist_now(),
     )
 
     print_result("Source", payload.source.value)
@@ -655,8 +640,6 @@ async def run_pipeline(*, resource: str | None):
     print()
 
     # --- Cleanup ---
-    if checks.get("redis"):
-        await close_redis()
     await close_db()
     stop_ssh_tunnel()
 

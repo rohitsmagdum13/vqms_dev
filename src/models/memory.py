@@ -1,8 +1,7 @@
 """Pydantic models for memory and context management in VQMS.
 
-VQMS uses four memory tiers:
-  - Redis hot cache (short-term, fast lookups)
-  - PostgreSQL persistent storage (long-term, queryable)
+VQMS uses three memory tiers:
+  - PostgreSQL persistent storage (long-term, queryable, includes cache tables)
   - pgvector semantic memory (embeddings for KB search)
   - In-graph agent state (LangGraph working memory)
 
@@ -23,7 +22,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from src.models.vendor import VendorTier
-from src.utils.helpers import utc_now
+from src.utils.helpers import ist_now
 
 
 class EpisodicMemory(BaseModel):
@@ -52,15 +51,14 @@ class EpisodicMemory(BaseModel):
         default_factory=dict,
         description="Additional context: category, urgency, satisfaction, etc.",
     )
-    created_at: datetime = Field(default_factory=utc_now)
+    created_at: datetime = Field(default_factory=ist_now)
 
 
 class VendorProfileCache(BaseModel):
     """Cached vendor profile from Salesforce.
 
-    Stored in both Redis (1-hour TTL for fast access) and
-    PostgreSQL (backup, refreshed on cache miss). Prevents
-    hitting Salesforce on every query for the same vendor.
+    Stored in PostgreSQL cache table (cache.kv_store with 1-hour TTL).
+    Prevents hitting Salesforce on every query for the same vendor.
     """
 
     vendor_id: str = Field(description="Salesforce Account ID")
@@ -73,7 +71,7 @@ class VendorProfileCache(BaseModel):
         default_factory=dict,
         description="Full profile: contact_email, account_manager, risk_flags, etc.",
     )
-    cached_at: datetime = Field(default_factory=utc_now)
+    cached_at: datetime = Field(default_factory=ist_now)
     ttl_seconds: int = Field(
         default=3600,
         description="Cache TTL in seconds (default 1 hour)",
@@ -104,4 +102,4 @@ class EmbeddingRecord(BaseModel):
         default_factory=dict,
         description="Chunk metadata: category, chunk_index, document_id, etc.",
     )
-    created_at: datetime = Field(default_factory=utc_now)
+    created_at: datetime = Field(default_factory=ist_now)

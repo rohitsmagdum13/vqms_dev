@@ -29,14 +29,14 @@ CREATE TABLE reporting.sla_metrics (
     sla_elapsed_hours   REAL,                          -- Actual hours elapsed (updated on resolution)
     sla_breached        BOOLEAN NOT NULL DEFAULT FALSE,-- True if SLA target was missed
     processing_path     VARCHAR(1),                    -- A, B, or C
-    first_response_at   TIMESTAMPTZ,                   -- When first email was sent to vendor
-    resolved_at         TIMESTAMPTZ,                   -- When case was resolved
+    first_response_at   TIMESTAMP,                      -- When first email was sent to vendor (IST)
+    resolved_at         TIMESTAMP,                     -- When case was resolved (IST)
     total_cost_usd      REAL,                          -- Total LLM cost for this execution
     total_tokens_in     INTEGER,                       -- Total input tokens across all LLM calls
     total_tokens_out    INTEGER,                       -- Total output tokens across all LLM calls
     llm_calls_count     INTEGER DEFAULT 0,             -- Number of LLM calls made
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at          TIMESTAMP NOT NULL DEFAULT (now() AT TIME ZONE 'Asia/Kolkata'),
+    updated_at          TIMESTAMP NOT NULL DEFAULT (now() AT TIME ZONE 'Asia/Kolkata')
 );
 
 -- Indexes for dashboard queries and SLA monitoring

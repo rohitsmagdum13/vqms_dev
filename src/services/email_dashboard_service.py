@@ -18,6 +18,8 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 
+from src.utils.helpers import IST
+
 from sqlalchemy import text
 
 from config.settings import get_settings
@@ -150,14 +152,14 @@ def _build_user_responses(parsed: list[dict]) -> list[UserResponse]:
 
 
 def _format_timestamp(dt: datetime | None) -> str:
-    """Format a datetime to ISO 8601 with timezone.
+    """Format a datetime to ISO 8601 with IST timezone.
 
-    If the datetime has no timezone info, assumes UTC.
+    If the datetime has no timezone info, assumes IST.
     """
     if dt is None:
         return ""
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=IST)
     return dt.isoformat()
 
 
@@ -625,8 +627,8 @@ async def fetch_email_stats(
         )
 
     try:
-        now_utc = datetime.now(timezone.utc)
-        today_start = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+        now_ist = datetime.now(IST)
+        today_start = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
         week_start = today_start - timedelta(days=7)
 
         async with engine.connect() as conn:

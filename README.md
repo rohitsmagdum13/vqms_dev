@@ -16,12 +16,12 @@ The LangGraph AI pipeline is built: SQS consumer, context loading, query analysi
 |-----------|--------|---------|
 | Pydantic models (23 models, 7 enums) | Built | All data contracts validated |
 | PostgreSQL schema (5 schemas, 11+ tables) | Built | 6 SQL migrations, SSH tunnel to RDS working |
-| Redis key schema (7 key families) | Built | Cloud Redis connected, idempotency working |
+| PostgreSQL cache (cache.kv_store) | Built | Idempotency, token blacklist, vendor cache working |
 | Email intake (Graph API) | Built | Real MSAL OAuth2, attachment download + S3 upload, 30+ field storage |
 | Portal intake (POST /queries) | Built | Pydantic validation, X-Vendor-ID header auth |
 | S3 / SQS / EventBridge adapters | Built | boto3 direct, all cloud services connected |
 | Salesforce adapter | Built | Real Salesforce SOQL queries via simple-salesforce (custom + standard Account) |
-| JWT Authentication | Built | Login/logout, Redis token blacklist, auth middleware, token refresh |
+| JWT Authentication | Built | Login/logout, cache-based token blacklist, auth middleware, token refresh |
 | Vendor CRUD | Built | GET/PUT vendors via Salesforce standard Account object |
 | Bedrock adapter (LLM + Embeddings) | Built | Claude Sonnet 3.5 + Titan Embed v2 via invoke_model |
 | OpenAI adapter (Fallback) | Built | GPT-4o + text-embedding-3-small, automatic fallback |
@@ -38,9 +38,9 @@ The LangGraph AI pipeline is built: SQS consumer, context loading, query analysi
 | SLA Monitoring | Phase 6 | Not yet built |
 | Frontend Portal (Angular) | Built | Full P1-P6 wizard flow: login, dashboard, 3-step query wizard, submit. Zero styling. |
 
-**Auth & Vendor CRUD:** JWT login/logout with Redis token blacklist, auth middleware on all protected routes, vendor GET/PUT against Salesforce standard Account. Merged from local_vqm backend with zero duplication.
+**Auth & Vendor CRUD:** JWT login/logout with cache-based token blacklist, auth middleware on all protected routes, vendor GET/PUT against Salesforce standard Account. Merged from local_vqm backend with zero duplication.
 
-**Test suite:** Unit + integration tests. AWS services mocked with moto. Redis mocked with fakeredis. 24 routing unit tests. 42 auth + vendor CRUD tests.
+**Test suite:** Unit + integration tests. AWS services mocked with moto. 24 routing unit tests. 42 auth + vendor CRUD tests.
 
 ---
 
@@ -50,7 +50,6 @@ The LangGraph AI pipeline is built: SQS consumer, context loading, query analysi
 - **Framework:** FastAPI with Pydantic v2
 - **Package manager:** uv (never pip)
 - **Database:** PostgreSQL with pgvector on AWS RDS (via SSH tunnel through bastion host)
-- **Cache:** Redis 7+ (cloud or local)
 - **Storage:** AWS S3 (4 pre-provisioned buckets)
 - **Queues:** AWS SQS (pre-provisioned queues)
 - **Events:** AWS EventBridge (pre-provisioned event bus)
@@ -60,7 +59,7 @@ The LangGraph AI pipeline is built: SQS consumer, context loading, query analysi
 - **AI/LLM:** Amazon Bedrock (primary) + OpenAI (fallback) -- Claude Sonnet 3.5 / GPT-4o for inference, Titan Embed v2 / text-embedding-3-small for embeddings, automatic provider fallback via LLM factory
 - **Orchestration:** LangGraph (Phase 3+)
 - **Logging:** structlog with JSON file logging (RotatingFileHandler)
-- **Testing:** pytest, moto (AWS mocking), fakeredis
+- **Testing:** pytest, moto (AWS mocking)
 
 ---
 
@@ -74,8 +73,7 @@ Before setting up, make sure you have:
 4. **SSH private key** (.pem file) for bastion host access to RDS
 5. **Microsoft Azure AD app registration** with Mail.Read and Mail.Send permissions for Graph API
 5b. **Salesforce credentials** — username, password, and security token (see step 7 below)
-6. **Redis** -- either local Redis 7+ or a cloud Redis instance
-7. **Git** for version control
+6. **Git** for version control
 
 On Windows CMD, make sure `python` and `uv` are on your PATH.
 
@@ -179,13 +177,7 @@ To test vendor resolution for a specific email:
 uv run python tests/manual/test_salesforce_connection.py --email john@acme.com
 ```
 
-### 8. Verify Redis connectivity
-
-```bash
-uv run python -c "import redis; r = redis.Redis(host='YOUR_REDIS_HOST', port=YOUR_PORT, password='YOUR_PASSWORD'); print(r.ping())"
-```
-
-### 9. Verify database connectivity (via SSH tunnel)
+### 8. Verify database connectivity (via SSH tunnel)
 
 ```bash
 uv run python scripts/check_db.py
@@ -193,7 +185,7 @@ uv run python scripts/check_db.py
 
 This opens an SSH tunnel to the bastion host, connects to RDS, runs a test query, and reports success or failure.
 
-### 10. Run database migrations
+### 9. Run database migrations
 
 You can run all 7 migrations through the bastion tunnel:
 
@@ -215,13 +207,13 @@ psql -U postgres -d vqms -f src/db/migrations/007_auth_tables_documentation.sql
 
 Note: Migration 003 requires the pgvector extension (`CREATE EXTENSION IF NOT EXISTS vector`). Migration 006 adds 14 detail columns to `intake.email_messages`. Migration 007 documents the existing `public.tbl_users` and `public.tbl_user_roles` tables (safe `CREATE TABLE IF NOT EXISTS` — won't modify existing data).
 
-### 11. Start the application
+### 10. Start the application
 
 ```bash
 uv run uvicorn main:app --reload --port 8000
 ```
 
-### 12. Start the Angular frontend (optional)
+### 11. Start the Angular frontend (optional)
 
 The frontend has zero styling -- it exists only for testing the portal flow from a browser. No auth -- any email/password works. Browser default HTML only.
 
@@ -246,7 +238,7 @@ Other pages:
 
 **Note:** The backend must be running on port 8000 (CORS is configured for localhost:4200). Authentication uses real JWT tokens — login with valid credentials from `public.tbl_users`.
 
-### 13. Seed knowledge base articles (Phase 3)
+### 12. Seed knowledge base articles (Phase 3)
 
 The KB search service requires articles in the `memory.embedding_index` table. Seed them:
 
@@ -256,7 +248,7 @@ uv run python -m src.db.seeds.seed_kb_articles
 
 This reads the 5 sample `.md` files from `data/knowledge_base/`, chunks them, embeds each chunk via Amazon Bedrock Titan Embed v2, and inserts into pgvector. Requires database connectivity (SSH tunnel) and Bedrock access.
 
-### 14. Verify health check
+### 13. Verify health check
 
 ```bash
 curl http://localhost:8000/health
@@ -270,8 +262,7 @@ Expected response:
   "app_name": "vqms",
   "app_env": "development",
   "version": "1.0.0",
-  "database": "connected",
-  "redis": "connected"
+  "database": "connected"
 }
 ```
 
@@ -279,7 +270,7 @@ Expected response:
 
 ## Running Tests
 
-Tests use moto for AWS mocking and fakeredis for Redis. No real cloud credentials needed.
+Tests use moto for AWS mocking. No real cloud credentials needed.
 
 ```bash
 # Run all tests
@@ -311,7 +302,7 @@ uv run ruff check .
 
 ## Running the Email Intake Pipeline
 
-The `scripts/run_email_intake.py` script exercises the full email intake pipeline against real cloud services (Redis, S3, SQS, EventBridge, Graph API).
+The `scripts/run_email_intake.py` script exercises the full email intake pipeline against real cloud services (S3, SQS, EventBridge, Graph API).
 
 ### Fetch the latest email from the shared mailbox
 
@@ -322,7 +313,7 @@ uv run python scripts/run_email_intake.py
 This fetches the most recent email from the configured shared mailbox via Microsoft Graph API and runs it through the full 11-step pipeline:
 
 1. Fetch email from Graph API (with to/cc addresses, body preview, auto-reply detection, attachment content download)
-2. Check Redis idempotency (7-day TTL on message_id)
+2. Check idempotency (7-day TTL on message_id via PostgreSQL cache)
 3. Resolve vendor via Salesforce adapter (stub: 3-step fallback)
 4. Correlate email thread (in-reply-to / references / conversationId)
 5. Upload attachments to S3 (`vqms-email-attachments-prod`)
@@ -578,11 +569,6 @@ See [Doc/API.md](Doc/API.md) for full request/response documentation.
 | `SSH_PRIVATE_KEY_PATH` | Yes* | Path to .pem file |
 | `RDS_HOST` | Yes* | RDS endpoint (forwarded through tunnel) |
 | `RDS_PORT` | No | Default 5432 |
-| **Redis** | | |
-| `REDIS_HOST` | Yes | Redis server host |
-| `REDIS_PORT` | No | Default 6379 |
-| `REDIS_PASSWORD` | No | Redis auth password |
-| `REDIS_SSL` | No | `true` for cloud Redis, `false` for local |
 | **Graph API** | | |
 | `GRAPH_API_TENANT_ID` | Yes | Azure AD tenant ID |
 | `GRAPH_API_CLIENT_ID` | Yes | Azure app client ID |
@@ -623,7 +609,7 @@ All LLM calls go through `src/llm/factory.py` — never import from bedrock or o
 
 ```
 vqms/
-  main.py                              FastAPI entry point, lifespan (SSH tunnel, DB, Redis)
+  main.py                              FastAPI entry point, lifespan (SSH tunnel, DB)
   CLAUDE.md                            Full project instructions for AI assistant
   Flow.md                              End-to-end runtime walkthrough of what is built
   config/
@@ -645,7 +631,7 @@ vqms/
     services/
       email_intake.py                  11-step email ingestion pipeline
       portal_submission.py             7-step portal submission pipeline
-      memory_context.py                Vendor profile (Redis→Salesforce) + history (PostgreSQL)
+      memory_context.py                Vendor profile (cache→Salesforce) + history (PostgreSQL)
       routing.py                       Deterministic routing: SLA matrix, team assignment
       kb_search.py                     KB search: Titan Embed v2 + pgvector cosine similarity
       auth.py                          JWT auth: login, validate, blacklist, refresh
@@ -684,15 +670,15 @@ vqms/
         005_reporting_schema.sql       sla_metrics
         006_intake_add_detail_columns.sql  14 detail columns on email_messages
     cache/
-      redis_client.py                  7 key families + connection management + TTLs
+      cache_client.py                  PostgreSQL-based cache (kv_store) + key builders + TTLs
     utils/
       logger.py                        structlog setup, console + rotating file handler
       correlation.py                   Correlation ID generation (UUID v4)
       helpers.py                       General utilities
       exceptions.py                    Domain exception classes
   tests/
-    conftest.py                        Shared fixtures (moto, fakeredis, sample data)
-    unit/                              8 test files (models, adapters, services, redis, correlation, db, routing)
+    conftest.py                        Shared fixtures (moto, sample data)
+    unit/                              8 test files (models, adapters, services, cache, correlation, db, routing)
     integration/                       1 E2E test (full email intake pipeline with mocked AWS)
     manual/                            4 manual tests (Salesforce, Bedrock, KB search, Phase 3 pipeline)
   scripts/
@@ -732,7 +718,7 @@ Verify: (1) Azure AD app registration has Mail.Read and Mail.Send API permission
 
 ### Tests fail with import errors
 
-Run `uv sync` to ensure all dependencies are installed. Tests use moto and fakeredis which are dev-only dependencies.
+Run `uv sync` to ensure all dependencies are installed. Tests use moto which is a dev-only dependency.
 
 ### Logs not appearing in data/logs/
 

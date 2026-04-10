@@ -2,7 +2,7 @@
 
 ## Context
 
-A separate FastAPI backend (`local_vqm`) built by a teammate handles user auth (JWT login/logout with werkzeug password hashing, token refresh, in-memory blacklist) and Salesforce vendor CRUD (GET/PUT on standard Account objects). It connects to the same RDS PostgreSQL instance but was built outside VQMS coding standards. The goal is to absorb all useful functionality into the main `vqms/` project with zero duplication, following existing patterns.
+A separate FastAPI backend (`local_vqm`) built by a teammate handles user auth (JWT login/logout with werkzeug password hashing, token refresh, cache-based blacklist) and Salesforce vendor CRUD (GET/PUT on standard Account objects). It connects to the same RDS PostgreSQL instance but was built outside VQMS coding standards. The goal is to absorb all useful functionality into the main `vqms/` project with zero duplication, following existing patterns.
 
 **What we're NOT merging:** `project_clean_up.py` (PyInstaller artifact cleanup), Flask-style session config, `APScheduler`, `pyfiglet` banner, sync SQLAlchemy engine, in-memory token blacklist, plain-text logging, hardcoded credentials.
 
@@ -39,8 +39,8 @@ A separate FastAPI backend (`local_vqm`) built by a teammate handles user auth (
 **File:** `.env.copy`
 - Add `JWT_SECRET_KEY`, `JWT_ALGORITHM`, `SESSION_TIMEOUT_SECONDS`, `TOKEN_REFRESH_THRESHOLD_SECONDS`
 
-### Step 4: Add Redis key builder for token blacklist
-**File:** `src/cache/redis_client.py`
+### Step 4: Add cache key builder for token blacklist
+**File:** `src/cache/kv_store.py`
 - New constant: `AUTH_BLACKLIST_TTL_SECONDS = 1800`
 - New key builder: `auth_blacklist_key(token_jti: str) -> tuple[str, int]`
   - Key pattern: `vqms:auth:blacklist:<jti>` with 30-min TTL (matches JWT lifetime)
@@ -68,16 +68,16 @@ A separate FastAPI backend (`local_vqm`) built by a teammate handles user auth (
   - Queries `tbl_users` via `get_engine()` + raw SQL + `text()`
   - Verifies password with `werkzeug.security.check_password_hash` (wrapped in `asyncio.to_thread()` — CPU-bound)
   - Queries `tbl_user_roles` for role/tenant
-  - Creates JWT, caches session in Redis
+  - Creates JWT, caches session in PostgreSQL cache
 - `create_access_token(user_name, role, tenant) -> str`
   - Uses `jose.jwt.encode()` with settings.jwt_secret_key
   - Claims: sub, role, tenant, exp, iat, jti (UUID)
 - `validate_token(token) -> TokenPayload | None`
-  - Decodes JWT, checks Redis blacklist via `auth_blacklist_key(jti)` + `exists_key()`
+  - Decodes JWT, checks cache blacklist via `auth_blacklist_key(jti)` + `exists_key()`
 - `blacklist_token(token) -> None`
-  - Extracts jti, stores in Redis with `set_with_ttl(*auth_blacklist_key(jti))`
+  - Extracts jti, stores in cache with `set_with_ttl(*auth_blacklist_key(jti))`
 - `refresh_token_if_expiring(payload) -> str | None`
-  - If `exp - now < threshold`: create new token, blacklist old jti, return new token
+  - If `exp - now < threshold`: create new token, blacklist old jti in cache, return new token
   - Otherwise return None
 
 ### Step 8: Create auth middleware
@@ -126,7 +126,7 @@ A separate FastAPI backend (`local_vqm`) built by a teammate handles user auth (
 ### Step 14: Write unit tests
 **New files:**
 - `tests/unit/test_auth_models.py` — model validation tests
-- `tests/unit/test_auth_service.py` — mock DB + Redis, test login/logout/refresh/blacklist
+- `tests/unit/test_auth_service.py` — mock DB + cache, test login/logout/refresh/blacklist
 - `tests/unit/test_auth_middleware.py` — test skip paths, valid/invalid/expired tokens
 - `tests/unit/test_vendor_routes.py` — mock Salesforce adapter, test GET/PUT
 
@@ -144,7 +144,7 @@ A separate FastAPI backend (`local_vqm`) built by a teammate handles user auth (
 | Modify | `pyproject.toml` | Add werkzeug |
 | Modify | `config/settings.py` | Add JWT settings |
 | Modify | `.env.copy` | Add JWT env vars |
-| Modify | `src/cache/redis_client.py` | Add blacklist key builder + exists_key |
+| Modify | `src/cache/kv_store.py` | Add blacklist key builder + exists_key |
 | **Create** | `src/models/auth.py` | Auth Pydantic models |
 | **Create** | `src/db/migrations/007_auth_tables_documentation.sql` | Document existing tables |
 | **Create** | `src/services/auth.py` | Auth business logic |
@@ -164,7 +164,7 @@ A separate FastAPI backend (`local_vqm`) built by a teammate handles user auth (
 
 - **DB connection:** Uses existing `get_engine()` from `src/db/connection.py`. No new SQLAlchemy engine.
 - **Logging:** Uses existing `get_logger()`, `@log_api_call`, `@log_service_call` from `src/utils/logger.py`. No new logger.
-- **Redis:** Uses existing `get_redis_client()`, `set_with_ttl()`, `get_value()`. New key builder follows existing pattern.
+- **Cache:** Uses existing `get_pg_cache()`, `set_with_ttl()`, `get_value()`. New key builder follows existing pattern.
 - **Salesforce:** Uses existing `SalesforceAdapter` singleton. New methods added to same class.
 - **Settings:** Uses existing `AppSettings` via `get_settings()`. No Config class pattern.
 - **Route pattern:** Thin handlers call services. No business logic in routes.

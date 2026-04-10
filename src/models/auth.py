@@ -129,7 +129,7 @@ class TokenPayload(BaseModel):
     request.state for downstream route handlers.
 
     The 'jti' (JWT ID) is a UUID that uniquely identifies each
-    token — used for the Redis-based blacklist on logout.
+    token — used for the cache-based blacklist on logout.
     """
 
     sub: str = Field(description="Subject — the username")

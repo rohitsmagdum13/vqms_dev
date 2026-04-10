@@ -99,18 +99,6 @@ exist only as empty `__init__.py` files or are not yet coded say [STUB] or
   +---------------------------------------------------------------------+
   |                           |                                          |
   |                           v                                          |
-  |  Step 4: Redis Connection                                            |
-  +---------------------------------------------------------------------+
-  | src/cache/redis_client.py -> init_redis()                            |
-  | Status: [IMPLEMENTED]                                                |
-  |                                                                      |
-  | Input: host, port, password, db, ssl                                 |
-  | What happens:                                                        |
-  |   1. Creates async Redis client (redis.asyncio)                      |
-  |   2. Runs PING to verify connection                                  |
-  | Output: Redis client stored in module-level _redis_client            |
-  +---------------------------------------------------------------------+
-  |                                                                      |
   |  NOTE: Each step is try/except. If any fails, app still starts.      |
   |        Health check at GET /health reports which services connected.  |
   +=====================================================================+
@@ -120,7 +108,6 @@ exist only as empty `__init__.py` files or are not yet coded say [STUB] or
   +=====================================================================+
   |  1. close_db()        -- disposes SQLAlchemy engine                  |
   |  2. stop_ssh_tunnel() -- closes SSH tunnel forwarder                 |
-  |  3. close_redis()     -- closes Redis connection                    |
   +=====================================================================+
 
   +=====================================================================+
@@ -152,7 +139,7 @@ exist only as empty `__init__.py` files or are not yet coded say [STUB] or
 ## PART 0B: AUTHENTICATION FLOW (Login / Logout / JWT)
 
 User authentication merged from local_vqm backend. JWT-based auth with
-Redis token blacklist. Middleware validates tokens on all protected routes.
+Cache-based token blacklist. Middleware validates tokens on all protected routes.
 
 ```
   +=====================================================================+
@@ -205,8 +192,8 @@ Redis token blacklist. Middleware validates tokens on all protected routes.
   |      a. Decode JWT with jose.jwt.decode()                            |
   |      b. Check all 6 required claims present (sub, role, tenant,      |
   |         exp, iat, jti)                                               |
-  |      c. Check Redis blacklist: auth_blacklist_key(jti) -> exists?    |
-  |         If Redis is down, allow token through (graceful degradation) |
+  |      c. Check cache blacklist: auth_blacklist_key(jti) -> exists?    |
+  |         If cache is unavailable, allow token through (graceful degradation) |
   |   3. If valid: set request.state.username, .role, .tenant,           |
   |      .is_authenticated = True → continue to route handler            |
   |   4. If invalid/missing: return 401 JSON immediately                 |
@@ -229,12 +216,12 @@ Redis token blacklist. Middleware validates tokens on all protected routes.
   |   2. Call src/services/auth.py -> blacklist_token(token)             |
   |      a. Decode JWT (verify_exp=False — allows blacklisting expired)  |
   |      b. Extract JTI from claims                                      |
-  |      c. Store in Redis: vqms:auth:blacklist:<jti> = "blacklisted"    |
+  |      c. Store in PostgreSQL cache: vqms:auth:blacklist:<jti> = "blacklisted" |
   |         TTL = 1800s (matches JWT lifetime)                           |
   |   3. Return { "message": "Logged out successfully" }                 |
   |                                                                      |
   | Storage writes:                                                      |
-  |   Redis: vqms:auth:blacklist:<jti> (30-min TTL, auto-cleanup)        |
+  |   PostgreSQL cache: vqms:auth:blacklist:<jti> (30-min TTL, auto-cleanup) |
   +=====================================================================+
 ```
 
@@ -411,14 +398,16 @@ new email and sends a webhook notification to our FastAPI endpoint.
         |  1. Build key via idempotency_key()         |
         |     Key: vqms:idempotency:email:<message_id>|
         |     TTL: 604800 seconds (7 days)            |
-        |  2. Redis GET on the key                    |
+        |  2. PostgreSQL cache GET on the key          |
         |  3. If EXISTS -> raise DuplicateQueryError   |
-        |  4. If NOT EXISTS -> Redis SET with TTL      |
-        |  5. If Redis down -> log warning, continue   |
+        |  4. If NOT EXISTS -> cache SET with TTL      |
+        |  5. If cache unavailable -> log warning,     |
+        |     continue (graceful degradation)          |
         |     (graceful degradation)                  |
         |                                             |
         | Storage writes:                             |
-        |   Redis key: vqms:idempotency:email:<msg_id>|
+        |   PostgreSQL cache key:                     |
+        |     vqms:idempotency:email:<msg_id>         |
         |   Value: "1"                                |
         |   TTL: 604800 seconds (7 days)              |
         |                                             |
@@ -766,7 +755,7 @@ with zero styling (browser defaults only). The full flow:
 - Step P2 (Dashboard): `frontend/src/app/pages/portal/portal.component.ts`
   → GET /dashboard/kpis (KPI counts from PostgreSQL)
   → GET /queries (list queries for vendor from PostgreSQL)
-  → Status: [IMPLEMENTED -- basic KPIs from PostgreSQL, no Redis cache]
+  → Status: [IMPLEMENTED -- basic KPIs from PostgreSQL]
 
 - Step P3 (Type Selection): `frontend/src/app/pages/new-query-type/new-query-type.component.ts`
   → No server calls (browser-only, stores type in WizardService)
@@ -851,10 +840,11 @@ Backend routes supporting the portal:
         |  3. Idempotency check:                      |
         |     _check_idempotency("portal:{vendor_id}: |
         |       {subject}")                           |
-        |     Redis key: vqms:idempotency:portal:...  |
+        |     PostgreSQL cache key:                    |
+        |       vqms:idempotency:portal:...            |
         |     TTL: 604800 (7 days)                    |
         |     -> DuplicateQueryError if exists         |
-        |     -> Graceful if Redis down               |
+        |     -> Graceful if cache unavailable         |
         |                                             |
         |  4. Build UnifiedQueryPayload:              |
         |     source=PORTAL, vendor_id from JWT/header|
@@ -876,8 +866,9 @@ Backend routes supporting the portal:
         |     Message: UnifiedQueryPayload as JSON    |
         |                                             |
         | Storage writes:                             |
-        |   Redis: vqms:idempotency:portal:<vendor>:  |
-        |          <subject> (TTL 7 days)             |
+        |   PostgreSQL cache:                          |
+        |     vqms:idempotency:portal:<vendor>:       |
+        |     <subject> (TTL 7 days)                  |
         |   PostgreSQL: workflow.case_execution        |
         |   EventBridge: QueryReceived event           |
         |   SQS: vqms-query-intake-queue message       |
@@ -972,7 +963,7 @@ a LangGraph PipelineState, and runs the full AI pipeline.
         |      status → "analyzing"                    |
         |      via _update_case_status()               |
         |                                              |
-        |  7.2 Cache workflow state in Redis            |
+        |  7.2 Cache workflow state in PostgreSQL cache  |
         |      Key: vqms:workflow:<execution_id>        |
         |      TTL: 24 hours                            |
         |      via _cache_workflow_state()              |
@@ -981,13 +972,13 @@ a LangGraph PipelineState, and runs the full AI pipeline.
         |      File: src/services/memory_context.py    |
         |      → load_vendor_profile(vendor_id,        |
         |          sender_email, correlation_id)        |
-        |      First checks Redis cache                |
+        |      First checks PostgreSQL cache             |
         |        (vqms:vendor:<id>, 1h TTL)             |
         |      On miss → Salesforce adapter:            |
         |        find_account_by_vendor_id()             |
         |        find_account_by_id()                    |
         |        find_contact_by_email()                 |
-        |      Caches result in Redis for 1 hour        |
+        |      Caches result in PostgreSQL cache (1h TTL)|
         |      Returns: VendorProfile | None            |
         |                                              |
         |  7.4 Load vendor history                     |
@@ -1010,8 +1001,8 @@ a LangGraph PipelineState, and runs the full AI pipeline.
         |                                              |
         | Storage writes:                               |
         |   PostgreSQL: workflow.case_execution (status) |
-        |   Redis: vqms:workflow:<exec_id> (24h TTL)     |
-        |   Redis: vqms:vendor:<id> (1h TTL, on miss)    |
+        |   PostgreSQL cache: vqms:workflow:<exec_id> (24h TTL) |
+        |   PostgreSQL cache: vqms:vendor:<id> (1h TTL, on miss) |
         |   EventBridge: AnalysisStarted event           |
         |   audit.action_log: context_loaded             |
         |                                              |
@@ -1085,7 +1076,7 @@ a LangGraph PipelineState, and runs the full AI pipeline.
         |  6. Persist analysis result                   |
         |     PostgreSQL: UPDATE case_execution          |
         |       SET analysis_result = <JSONB>            |
-        |     Redis: update workflow state               |
+        |     PostgreSQL cache: update workflow state    |
         |       → status = "analysis_complete"           |
         |     S3: upload prompt snapshot to              |
         |       vqms-audit-artifacts-prod                |
@@ -1094,7 +1085,7 @@ a LangGraph PipelineState, and runs the full AI pipeline.
         |                                              |
         | Storage writes:                               |
         |   PostgreSQL: case_execution.analysis_result   |
-        |   Redis: vqms:workflow:<exec_id>               |
+        |   PostgreSQL cache: vqms:workflow:<exec_id>    |
         |   S3: audit-artifacts/prompts/<exec_id>.json   |
         |   EventBridge: AnalysisCompleted               |
         |   audit.action_log: analysis_completed         |
@@ -1270,7 +1261,7 @@ real Resolution Agent and Communication Drafting Agent.
         |     Path A: "resolving_ai"                   |
         |     Path B: "awaiting_team_resolution"       |
         |     Path C: "awaiting_human_review"          |
-        |  2. Update Redis workflow state               |
+        |  2. Update PostgreSQL cache workflow state     |
         |  3. Publish EventBridge event                 |
         |     PathASelected / PathBSelected /            |
         |     HumanReviewRequired                       |
@@ -1279,7 +1270,7 @@ real Resolution Agent and Communication Drafting Agent.
         |                                              |
         | Storage writes:                               |
         |   PostgreSQL: case_execution (status)          |
-        |   Redis: vqms:workflow:<exec_id>               |
+        |   PostgreSQL cache: vqms:workflow:<exec_id>    |
         |   EventBridge: path event                      |
         |   audit.action_log: path_selected              |
         |                                              |
@@ -1436,7 +1427,7 @@ real Resolution Agent and Communication Drafting Agent.
   |                                                     |
   | PostgreSQL schema ready:                            |
   |   reporting.sla_metrics [SCHEMA BUILT]              |
-  | Redis key ready:                                    |
+  | PostgreSQL cache key ready:                          |
   |   vqms:sla:<ticket_id> (no auto-expire)             |
   +=====================================================+
 ```
@@ -1478,12 +1469,12 @@ real Resolution Agent and Communication Drafting Agent.
 | `src/api/routes/dashboard.py` | `list_queries()` | GET /queries — vendor query list |
 | `src/api/routes/dashboard.py` | `get_query_detail()` | GET /queries/{query_id} — single query detail |
 | `src/api/routes/auth.py` | `login()` | POST /auth/login — real JWT auth against tbl_users |
-| `src/api/routes/auth.py` | `logout()` | POST /auth/logout — blacklist token in Redis |
+| `src/api/routes/auth.py` | `logout()` | POST /auth/logout — blacklist token in PostgreSQL cache |
 | `src/api/routes/vendors.py` | `list_vendors()` | GET /vendors — list active vendors from Salesforce Account |
 | `src/api/routes/vendors.py` | `update_vendor()` | PUT /vendors/{vendor_id} — update vendor in Salesforce Account |
 | `src/api/middleware/auth_middleware.py` | `AuthMiddleware` | JWT validation middleware on all protected routes |
-| `main.py` | `health_check()` | GET /health with DB + Redis status |
-| `main.py` | `lifespan()` | Startup/shutdown (SSH tunnel, DB, Redis) |
+| `main.py` | `health_check()` | GET /health with DB status |
+| `main.py` | `lifespan()` | Startup/shutdown (SSH tunnel, DB) |
 
 ### Services
 | File | Function | What it does |
@@ -1493,7 +1484,7 @@ real Resolution Agent and Communication Drafting Agent.
 | `src/services/email_dashboard_service.py` | `fetch_email_stats()` | Aggregate stats for dashboard |
 | `src/services/email_dashboard_service.py` | `generate_attachment_download_url()` | Presigned S3 download URL |
 | `src/services/email_intake.py` | `process_email_notification()` | Full 11-step email pipeline |
-| `src/services/email_intake.py` | `_check_email_idempotency()` | Redis dedup for emails |
+| `src/services/email_intake.py` | `_check_email_idempotency()` | PostgreSQL cache dedup for emails |
 | `src/services/email_intake.py` | `_determine_thread_status()` | NEW vs EXISTING_OPEN |
 | `src/services/email_intake.py` | `_serialize_email_for_storage()` | Detailed JSON for S3 |
 | `src/services/email_intake.py` | `_extract_reference()` | Regex invoice/PO/contract extraction |
@@ -1502,9 +1493,9 @@ real Resolution Agent and Communication Drafting Agent.
 | `src/services/email_intake.py` | `_store_email_record()` | Write to intake.email_messages + attachments |
 | `src/services/email_intake.py` | `_store_case_execution()` | Write to workflow.case_execution |
 | `src/services/portal_submission.py` | `submit_portal_query()` | Full 7-step portal pipeline |
-| `src/services/portal_submission.py` | `_check_idempotency()` | Redis dedup for portal |
+| `src/services/portal_submission.py` | `_check_idempotency()` | PostgreSQL cache dedup for portal |
 | `src/services/portal_submission.py` | `_store_case_execution()` | Write to workflow.case_execution |
-| `src/services/memory_context.py` | `load_vendor_profile()` | Redis cache → Salesforce → cache result |
+| `src/services/memory_context.py` | `load_vendor_profile()` | PostgreSQL cache → Salesforce → cache result |
 | `src/services/memory_context.py` | `load_vendor_history()` | SELECT from memory.episodic_memory LIMIT 10 |
 | `src/services/routing.py` | `route_query()` | SLA matrix + team assignment + automation check |
 | `src/services/routing.py` | `calculate_sla_hours()` | 16-cell SLA matrix lookup |
@@ -1513,8 +1504,8 @@ real Resolution Agent and Communication Drafting Agent.
 | `src/services/kb_search.py` | `search_kb()` | Embed query → pgvector cosine similarity search |
 | `src/services/auth.py` | `authenticate_user()` | Login: query tbl_users, verify password, query tbl_user_roles, create JWT |
 | `src/services/auth.py` | `create_access_token()` | Create signed JWT with sub, role, tenant, exp, iat, jti claims |
-| `src/services/auth.py` | `validate_token()` | Decode JWT, check Redis blacklist |
-| `src/services/auth.py` | `blacklist_token()` | Store JTI in Redis with TTL for logout |
+| `src/services/auth.py` | `validate_token()` | Decode JWT, check cache blacklist |
+| `src/services/auth.py` | `blacklist_token()` | Store JTI in PostgreSQL cache with TTL for logout |
 | `src/services/auth.py` | `refresh_token_if_expiring()` | Create new token if < 300s remaining, blacklist old |
 
 ### Agents
@@ -1550,7 +1541,7 @@ real Resolution Agent and Communication Drafting Agent.
 |------|----------|-------------|
 | `src/orchestration/graph.py` | `build_pipeline_graph()` | LangGraph StateGraph with conditional edges |
 | `src/orchestration/sqs_consumer.py` | `start_consumer()` | SQS long-poll → LangGraph pipeline → delete on success |
-| `src/orchestration/nodes/context_loading.py` | `context_loading_node()` | Step 7: status, Redis, vendor profile, history, budget |
+| `src/orchestration/nodes/context_loading.py` | `context_loading_node()` | Step 7: status, cache, vendor profile, history, budget |
 | `src/orchestration/nodes/query_analysis_node.py` | `query_analysis_node()` | Step 8: wraps QueryAnalysisAgent, persists results |
 | `src/orchestration/nodes/confidence_check.py` | `check_confidence()` | Conditional: >= 0.85 pass, < 0.85 fail |
 | `src/orchestration/nodes/routing_and_kb_search.py` | `routing_and_kb_search_node()` | Step 9: parallel routing + KB search |
@@ -1566,10 +1557,10 @@ real Resolution Agent and Communication Drafting Agent.
 | `src/db/connection.py` | `close_db()` | Dispose engine |
 | `src/db/connection.py` | `stop_ssh_tunnel()` | Close SSH tunnel |
 | `src/db/connection.py` | `check_db_health()` | SELECT 1 health check |
-| `src/cache/redis_client.py` | `init_redis()` | Async Redis connection |
-| `src/cache/redis_client.py` | 8 key builders | idempotency, session, vendor, workflow, sla, dashboard, thread, auth_blacklist |
-| `src/cache/redis_client.py` | `exists_key()` | Check if Redis key exists (used by token blacklist) |
-| `src/cache/redis_client.py` | `set_with_ttl()` / `get_value()` | Redis read/write helpers |
+| `src/cache/cache_client.py` | `init_cache()` | PostgreSQL-based cache connection |
+| `src/cache/cache_client.py` | 8 key builders | idempotency, session, vendor, workflow, sla, dashboard, thread, auth_blacklist |
+| `src/cache/cache_client.py` | `exists_key()` | Check if cache key exists (used by token blacklist) |
+| `src/cache/cache_client.py` | `set_with_ttl()` / `get_value()` | Cache read/write helpers |
 | `src/storage/s3_client.py` | `upload_file()` / `download_file()` | S3 put/get via boto3 |
 | `src/events/eventbridge.py` | `publish_event()` | EventBridge put_events |
 | `src/queues/sqs.py` | `publish()` / `consume()` | SQS send/receive |
@@ -1641,10 +1632,10 @@ real Resolution Agent and Communication Drafting Agent.
 |------|-------|----------------|
 | `tests/unit/test_models.py` | ~80 | All Pydantic models and enums |
 | `tests/unit/test_adapters.py` | ~15 | S3, SQS, EventBridge (moto), Salesforce stub |
-| `tests/unit/test_redis_keys.py` | ~15 | All 7 key families, TTLs, prefix |
+| `tests/unit/test_cache_keys.py` | ~15 | All 7 key families, TTLs, prefix |
 | `tests/unit/test_correlation.py` | ~10 | UUID format, query ID format, uniqueness |
 | `tests/unit/test_email_intake.py` | ~11 | Email pipeline + thread correlation |
-| `tests/unit/test_portal_submission.py` | ~7 | Portal pipeline, dedup, graceful Redis |
+| `tests/unit/test_portal_submission.py` | ~7 | Portal pipeline, dedup, graceful cache fallback |
 | `tests/unit/test_db_connection.py` | ~16 | SSH tunnel, engine lifecycle, health |
 | `tests/unit/test_auth_models.py` | 11 | Auth Pydantic models (UserRecord, LoginRequest, TokenPayload, etc.) |
 | `tests/unit/test_auth_service.py` | 13 | JWT create/validate/blacklist/refresh, authenticate_user mocked |
@@ -1680,7 +1671,7 @@ These architecture doc components have zero code (only empty `__init__.py` files
 | LLM Factory | `src/llm/factory.py` | **Built** — multi-provider fallback (Bedrock → OpenAI) |
 | LLM Utils (RAG chunking) | `src/llm/utils.py` | Phase 4+ |
 | LLM Security Helpers | `src/llm/security_helpers.py` | Phase 4+ |
-| Short-term Memory (Redis) | `src/memory/short_term.py` | Phase 4+ |
+| Short-term Memory (Cache) | `src/memory/short_term.py` | Phase 4+ |
 | Long-term Memory (pgvector) | `src/memory/long_term.py` | Phase 4+ |
 | Custom Agent Tools | `src/tools/custom_tools.py` | Phase 4+ |
 | Evaluation Matrix | `src/evaluation/matrix.py` | Phase 8 |

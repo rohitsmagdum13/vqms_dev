@@ -1,9 +1,9 @@
 """VQMS — Vendor Query Management System.
 
 Entry point for the FastAPI application. Sets up structured logging,
-SSH tunnel to bastion/RDS, database connection pool, Redis client,
-and optionally the SQS pipeline consumer on startup. Provides a
-health check endpoint that reports connectivity.
+SSH tunnel to bastion/RDS, database connection pool, and optionally
+the SQS pipeline consumer on startup. Provides a health check
+endpoint that reports connectivity.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from src.api.routes.email_dashboard import router as email_dashboard_router
 from src.api.routes.queries import router as queries_router
 from src.api.routes.vendors import router as vendors_router
 from src.api.routes.webhooks import router as webhooks_router
-from src.cache.redis_client import check_redis_health, close_redis, init_redis
+from src.cache.pg_cache import cleanup_expired
 from src.db.connection import (
     check_db_health,
     close_db,
@@ -45,16 +45,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
       1. Configure structured logging
       2. Establish SSH tunnel to bastion host for RDS access
       3. Connect to PostgreSQL through the tunnel
-      4. Connect to Redis
+      4. Start cache cleanup background task (hourly expired entry removal)
       5. Start SQS pipeline consumer as background task (if not --server-only)
 
     On shutdown:
       1. Signal consumer to stop
       2. Close database pool
       3. Close SSH tunnel
-      4. Close Redis connection
 
-    Database, tunnel, and Redis failures are logged but do not
+    Database and tunnel failures are logged but do not
     prevent startup — the health check will report disconnected.
     """
     settings = get_settings()
@@ -111,27 +110,30 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             exc_info=True,
         )
 
-    # Step 3: Connect to Redis
-    try:
-        await init_redis(
-            host=settings.redis_host,
-            port=settings.redis_port,
-            password=settings.redis_password,
-            db=settings.redis_db,
-            ssl=settings.redis_ssl,
-        )
-    except Exception:
-        logger.warning(
-            "Could not connect to Redis — running without cache",
-            exc_info=True,
-        )
+    # Step 4: Start cache cleanup background task
+    # Removes expired entries from cache.kv_store every hour
+    async def _cache_cleanup_loop(stop_event: asyncio.Event) -> None:
+        while not stop_event.is_set():
+            try:
+                await asyncio.sleep(3600)  # 1 hour
+                await cleanup_expired()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.warning("Cache cleanup failed", exc_info=True)
 
-    # Step 4: Start SQS pipeline consumer as a background task
+    # Step 5: Start SQS pipeline consumer as a background task
     # The consumer polls SQS for UnifiedQueryPayload messages and
     # runs them through the LangGraph pipeline (Steps 7-9).
     # It runs until shutdown_event is set.
     consumer_task = None
+    cache_cleanup_task = None
     shutdown_event = asyncio.Event()
+
+    cache_cleanup_task = asyncio.create_task(
+        _cache_cleanup_loop(shutdown_event),
+        name="cache-cleanup",
+    )
     try:
         from src.orchestration.sqs_consumer import start_consumer
 
@@ -159,9 +161,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             pass
         logger.info("SQS pipeline consumer stopped")
 
+    if cache_cleanup_task is not None:
+        cache_cleanup_task.cancel()
+        try:
+            await cache_cleanup_task
+        except asyncio.CancelledError:
+            pass
+
     await close_db()
     stop_ssh_tunnel()
-    await close_redis()
     logger.info("VQMS shutdown complete")
 
 
@@ -238,12 +246,11 @@ app.include_router(vendors_router)
 async def health_check() -> dict:
     """Health check endpoint.
 
-    Returns the application status and connectivity to PostgreSQL
-    and Redis. Always returns HTTP 200 — the body indicates whether
+    Returns the application status and connectivity to PostgreSQL.
+    Always returns HTTP 200 — the body indicates whether
     backend services are reachable.
     """
     db_healthy = await check_db_health()
-    redis_healthy = await check_redis_health()
 
     return {
         "status": "ok",
@@ -252,5 +259,4 @@ async def health_check() -> dict:
         "app_env": settings.app_env,
         "version": settings.app_version,
         "database": "connected" if db_healthy else "disconnected",
-        "redis": "connected" if redis_healthy else "disconnected",
     }

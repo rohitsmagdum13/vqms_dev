@@ -70,15 +70,6 @@ class AppSettings(BaseSettings):
     pgvector_hnsw_m: int = 16
     pgvector_hnsw_ef_construction: int = 64
 
-    # --- Redis ---
-    redis_host: str = "localhost"
-    redis_port: int = 6379
-    redis_password: str = ""
-    redis_db: int = 0
-    redis_ssl: bool = False
-    redis_key_prefix: str = "vqms:"
-    redis_default_ttl_seconds: int = 3600
-
     # --- Microsoft Graph API (Email) ---
     graph_api_tenant_id: str = ""
     graph_api_client_id: str = ""

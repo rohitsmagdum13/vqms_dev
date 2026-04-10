@@ -23,7 +23,7 @@ from src.db.connection import get_engine
 from src.models.ticket import RoutingDecision
 from src.models.vendor import VendorProfile, VendorTier
 from src.models.workflow import AnalysisResult, UrgencyLevel
-from src.utils.helpers import utc_now
+from src.utils.helpers import ist_now
 from src.utils.log_context import LogContext
 
 logger = logging.getLogger(__name__)
@@ -163,7 +163,7 @@ async def route_query(
 
     # Calculate SLA
     sla_hours = calculate_sla_hours(vendor_tier, analysis.urgency_level)
-    sla_deadline = utc_now() + timedelta(hours=sla_hours)
+    sla_deadline = ist_now() + timedelta(hours=sla_hours)
 
     # Assign team
     team = assign_team(analysis.suggested_category)

@@ -29,3 +29,21 @@
 **Mistake:** `sshtunnel 0.4.0` references `paramiko.DSSKey` which was removed in `paramiko 4.0.0`, causing `AttributeError: module 'paramiko' has no attribute 'DSSKey'` when opening SSH tunnels.
 **Correction:** Pinned `paramiko<4.0.0` in `pyproject.toml`. Paramiko 3.5.1 still has `DSSKey`.
 **Rule:** When using `sshtunnel`, always pin `paramiko<4.0.0` until `sshtunnel` releases a version compatible with paramiko 4.x.
+
+## 2026-04-10 — Dictionary key mismatch silently skips code path
+
+**Mistake:** In `scripts/run_email_intake.py`, the pre-flight health check stored the database status as `checks["postgres"] = True`, but the idempotency check later read `checks.get("db")` which always returned `None`. This silently skipped the entire cache write — no error, no log, nothing. The bug was invisible because `dict.get()` returns `None` for missing keys without raising.
+**Correction:** Changed `checks.get("db")` to `checks.get("postgres")` to match the key set during pre-flight.
+**Rule:** When using a dictionary as a shared state bag between code sections, grep for every `.get("key")` and `["key"]` usage to verify the key names match exactly. Silent `None` returns from `dict.get()` are a common source of invisible bugs.
+
+## 2026-04-10 — SQLAlchemy text() conflicts with PostgreSQL `::` cast syntax
+
+**Mistake:** Used `expires_at = now() + :ttl_interval::interval` in a `sqlalchemy.text()` query. SQLAlchemy's named parameter syntax uses `:name`, so it interpreted `::interval` as a second named parameter called `:interval`, causing a SQL syntax error.
+**Correction:** First tried `CAST(:ttl_interval AS interval)` which fixed the SQLAlchemy parsing but caused a different error (see next lesson). Final fix: compute `expires_at` entirely in Python as `datetime.now(IST) + timedelta(seconds=ttl)` and pass the result as a TIMESTAMPTZ parameter, eliminating the need for any SQL interval operations.
+**Rule:** Never use PostgreSQL `::type` cast syntax inside `sqlalchemy.text()` queries — it conflicts with SQLAlchemy's `:param` syntax. Either use `CAST(x AS type)` or compute the value in Python before passing it as a parameter.
+
+## 2026-04-10 — asyncpg expects Python objects for typed parameters, not strings
+
+**Mistake:** After fixing the SQLAlchemy syntax, used `CAST(:ttl_interval AS interval)` with a string value like `'604800 seconds'`. asyncpg saw the `interval` type annotation and tried to convert the Python string to a `timedelta` internally, but failed with `DataError: 'str' object has no attribute 'days'`. asyncpg requires Python-native types matching the PostgreSQL type — `timedelta` for `interval`, `datetime` for `timestamptz`, etc.
+**Correction:** Eliminated the interval cast entirely. Computed `expires_at = datetime.now(IST) + timedelta(seconds=ttl)` in Python and passed the `datetime` object directly as a TIMESTAMPTZ parameter. This avoids any type conversion issues.
+**Rule:** When using asyncpg (via SQLAlchemy async), always pass Python-native types that match the PostgreSQL column type: `datetime` for TIMESTAMPTZ, `timedelta` for INTERVAL, `int` for INTEGER, etc. Never pass strings and rely on PostgreSQL casting — asyncpg validates types before sending.

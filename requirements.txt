@@ -84,8 +84,6 @@ h11==0.16.0
     # via
     #   httpcore
     #   uvicorn
-hiredis==3.3.1
-    # via redis
 httpcore==1.0.9
     # via httpx
 httptools==0.7.1
@@ -279,8 +277,6 @@ pyyaml==6.0.3
     #   langchain-community
     #   langchain-core
     #   uvicorn
-redis==7.4.0
-    # via vqms (pyproject.toml)
 requests==2.33.1
     # via
     #   vqms (pyproject.toml)

@@ -17,7 +17,9 @@ Corresponds to Steps E1-E2 (email fetch) and Steps 12A/12B
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import datetime
+
+from src.utils.helpers import IST
 
 import httpx
 import msal
@@ -66,7 +68,7 @@ def _get_access_token() -> str:
     if _access_token and _token_expires_at:
         from datetime import timedelta
 
-        if datetime.now(UTC) < _token_expires_at - timedelta(minutes=5):
+        if datetime.now(IST) < _token_expires_at - timedelta(minutes=5):
             return _access_token
 
     app = _get_msal_app()
@@ -87,7 +89,7 @@ def _get_access_token() -> str:
     from datetime import timedelta
 
     expires_in = result.get("expires_in", 3600)
-    _token_expires_at = datetime.now(UTC) + timedelta(seconds=expires_in)
+    _token_expires_at = datetime.now(IST) + timedelta(seconds=expires_in)
 
     logger.info("Acquired new Graph API access token")
     return _access_token

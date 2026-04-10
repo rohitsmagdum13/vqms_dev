@@ -16,7 +16,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from src.utils.helpers import utc_now
+from src.utils.helpers import ist_now
 
 
 class DraftResponse(BaseModel):
@@ -67,7 +67,7 @@ class DraftEmailPackage(BaseModel):
     ticket_number: str = Field(
         description="ServiceNow ticket number to include in the email",
     )
-    created_at: datetime = Field(default_factory=utc_now)
+    created_at: datetime = Field(default_factory=ist_now)
 
 
 class ValidationReport(BaseModel):
@@ -107,4 +107,4 @@ class ValidationReport(BaseModel):
         default=0,
         description="How many re-drafts have been attempted (max 2)",
     )
-    created_at: datetime = Field(default_factory=utc_now)
+    created_at: datetime = Field(default_factory=ist_now)

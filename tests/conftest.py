@@ -19,7 +19,7 @@ from src.models.workflow import (
     Status,
     UrgencyLevel,
 )
-from src.utils.helpers import utc_now
+from src.utils.helpers import ist_now
 
 
 @pytest.fixture
@@ -83,5 +83,5 @@ def sample_routing_decision() -> RoutingDecision:
 
 @pytest.fixture
 def now():
-    """Current UTC time for timestamp comparisons."""
-    return utc_now()
+    """Current IST time for timestamp comparisons."""
+    return ist_now()

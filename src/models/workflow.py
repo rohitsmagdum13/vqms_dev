@@ -6,7 +6,7 @@ journey through the VQMS pipeline. The enums defined here
 many other model files.
 
 Corresponds to the workflow.case_execution table in PostgreSQL
-and the vqms:workflow:<execution_id> Redis key family.
+and the workflow.case_execution PostgreSQL table.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from src.utils.helpers import utc_now
+from src.utils.helpers import ist_now
 
 # --- Shared Enums ---
 # These are used by models across multiple files, so they live
@@ -28,7 +28,7 @@ class Status(str, Enum):
     """Workflow status for a query as it moves through the pipeline.
 
     Each status corresponds to a step in the VQMS Solution Flow Document.
-    The status is stored in workflow.case_execution and cached in Redis.
+    The status is stored in workflow.case_execution.
     """
 
     NEW = "new"
@@ -178,10 +178,9 @@ class AnalysisResult(BaseModel):
 
 
 class WorkflowState(BaseModel):
-    """Current workflow state cached in Redis for fast access.
+    """Current workflow state from case_execution.
 
-    This is a lightweight view of the case_execution record,
-    stored at vqms:workflow:<execution_id> with 24-hour TTL.
+    This is a lightweight view of the case_execution record.
     """
 
     execution_id: str = Field(description="UUID4 for this workflow execution")
@@ -200,8 +199,8 @@ class WorkflowState(BaseModel):
         default=None,
         description="Result from Query Analysis Agent (set at Step 8)",
     )
-    created_at: datetime = Field(default_factory=utc_now)
-    updated_at: datetime = Field(default_factory=utc_now)
+    created_at: datetime = Field(default_factory=ist_now)
+    updated_at: datetime = Field(default_factory=ist_now)
 
 
 class CaseExecution(BaseModel):
@@ -237,8 +236,8 @@ class CaseExecution(BaseModel):
         default=None,
         description="A (AI-resolved), B (human-team), or C (low-confidence review)",
     )
-    created_at: datetime = Field(default_factory=utc_now)
-    updated_at: datetime = Field(default_factory=utc_now)
+    created_at: datetime = Field(default_factory=ist_now)
+    updated_at: datetime = Field(default_factory=ist_now)
     completed_at: datetime | None = Field(
         default=None,
         description="When the case was closed or resolved",

@@ -1,13 +1,15 @@
 """Tests for the email intake service.
 
 Tests the full email ingestion flow with mocked Graph API,
-Salesforce, Redis, S3, SQS, and EventBridge. Verifies vendor
+Salesforce, cache, S3, SQS, and EventBridge. Verifies vendor
 resolution, thread correlation, event publishing, and SQS enqueuing.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
+
+from src.utils.helpers import IST
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -48,7 +50,7 @@ def _make_mock_email() -> EmailMessage:
             "Vendor ID: SF-001"
         ),
         body_html=None,
-        received_at=datetime.now(UTC),
+        received_at=datetime.now(IST),
         attachments=[
             EmailAttachment(
                 filename="INV-2026-0451.pdf",
@@ -61,7 +63,7 @@ def _make_mock_email() -> EmailMessage:
 
 
 # Common decorator stack for email intake tests:
-# Mock Graph API (returns TechNova email), Redis, S3, SQS, EventBridge
+# Mock Graph API (returns TechNova email), cache, S3, SQS, EventBridge
 _COMMON_PATCHES = [
     patch("src.services.email_intake.set_with_ttl", new_callable=AsyncMock),
     patch("src.services.email_intake.get_value", new_callable=AsyncMock, return_value=None),
@@ -167,7 +169,7 @@ class TestEmailIntake:
     @patch("src.services.email_intake.fetch_email_by_resource", new_callable=AsyncMock)
     @patch("src.services.email_intake.get_value", new_callable=AsyncMock, return_value="1")
     async def test_duplicate_email_raises_error(self, mock_get, mock_fetch):
-        """A duplicate email (message_id already in Redis) should raise."""
+        """A duplicate email (message_id already in cache) should raise."""
         mock_fetch.return_value = _make_mock_email()
 
         with pytest.raises(DuplicateQueryError):
@@ -179,15 +181,15 @@ class TestEmailIntake:
     @patch("src.services.email_intake.publish_event", new_callable=AsyncMock, return_value="evt-001")
     @patch("src.services.email_intake.upload_file", new_callable=AsyncMock, return_value="s3://bucket/key")
     @patch("src.services.email_intake.fetch_email_by_resource", new_callable=AsyncMock)
-    @patch("src.services.email_intake.get_value", new_callable=AsyncMock, side_effect=ConnectionError("Redis down"))
-    async def test_redis_failure_allows_processing(
+    @patch("src.services.email_intake.get_value", new_callable=AsyncMock, side_effect=ConnectionError("DB down"))
+    async def test_cache_failure_allows_processing(
         self, mock_get, mock_fetch, mock_s3, mock_event, mock_sqs, mock_vendor
     ):
-        """If Redis is down, email should still be processed."""
+        """If cache is down, email should still be processed."""
         mock_fetch.return_value = _make_mock_email()
         mock_vendor.return_value = _make_mock_vendor_match()
 
-        result = await process_email_notification(resource="messages/redis-down")
+        result = await process_email_notification(resource="messages/cache-down")
         assert result["status"] == "accepted"
 
 

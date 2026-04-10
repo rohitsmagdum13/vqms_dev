@@ -17,7 +17,6 @@ import logging
 
 from sqlalchemy import text
 
-from src.cache.redis_client import set_with_ttl, workflow_key
 from src.db.connection import get_engine
 from src.events.eventbridge import publish_event
 from src.utils.log_context import LogContext
@@ -139,14 +138,15 @@ async def _update_path(
     if engine is not None:
         sql = text(
             "UPDATE workflow.case_execution "
-            "SET selected_path = :path, status = :status, updated_at = NOW() "
+            "SET selected_path = :path, status = :status, updated_at = :now_ist "
             "WHERE execution_id = :execution_id"
         )
         try:
+            from src.utils.helpers import ist_now
             async with engine.begin() as conn:
                 await conn.execute(
                     sql,
-                    {"path": path, "status": status, "execution_id": execution_id},
+                    {"path": path, "status": status, "execution_id": execution_id, "now_ist": ist_now()},
                 )
         except Exception:
             logger.error(
@@ -154,21 +154,6 @@ async def _update_path(
                 extra={"execution_id": execution_id, "path": path},
                 exc_info=True,
             )
-
-    # Update Redis workflow state
-    key, ttl = workflow_key(execution_id)
-    try:
-        await set_with_ttl(
-            key,
-            json.dumps({"status": status, "step": f"PATH_{path}", "selected_path": path}),
-            ttl,
-        )
-    except Exception:
-        logger.warning(
-            "Failed to update Redis workflow state for path",
-            extra={"execution_id": execution_id, "path": path},
-            exc_info=True,
-        )
 
     # Publish EventBridge event
     try:

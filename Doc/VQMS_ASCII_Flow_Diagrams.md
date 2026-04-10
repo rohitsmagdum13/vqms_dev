@@ -5,7 +5,7 @@
 VQMS is at Phase 3 complete. Both entry points (portal and email) are working, the AI pipeline
 (context loading, query analysis, routing, KB search) is built and tested, and path decision
 logic routes queries to Path A, B, or C (stubs for now). This document traces every step with
-two levels of detail: one for developers who need Redis keys and SQL tables, and one for
+two levels of detail: one for developers who need cache keys and SQL tables, and one for
 stakeholders who need the business logic in plain English.
 
 **Reference scenario used throughout:** A vendor user from a Silver-tier company submitting
@@ -18,7 +18,7 @@ KB match, and enters Path A (AI-Resolved).
 # DETAILED TECHNICAL ASCII FLOW
 
 This section covers every implemented step with exact file paths, function names,
-Redis key patterns, SQL table names, S3 bucket paths, and SQS/EventBridge identifiers.
+cache key patterns, SQL table names, S3 bucket paths, and SQS/EventBridge identifiers.
 Steps marked `[STUB]` have code that sets status but delegates real work to a future phase.
 Steps marked `[NOT BUILT]` have no code at all.
 
@@ -55,10 +55,10 @@ Steps marked `[NOT BUILT]` have no code at all.
 │     - Pool: min=5, max=20, pool_pre_ping=True                               │
 │     - Runs SELECT 1 to verify; stores engine in module singleton             │
 │                                                                              │
-│   SUB-STEP 0.4: REDIS CONNECTION                                            │
-│     - src/cache/redis_client.py -> init_redis()                              │
-│     - redis.asyncio (aioredis), decode_responses=True                        │
-│     - Runs PING to verify                                                    │
+│   SUB-STEP 0.4: POSTGRESQL CACHE (KV STORE)                                  │
+│     - src/cache/kv_store.py -> init_cache()                                  │
+│     - PostgreSQL-backed key-value cache table                                │
+│     - Runs connectivity check to verify                                      │
 │                                                                              │
 │   SUB-STEP 0.5: SQS PIPELINE CONSUMER (BACKGROUND TASK)                     │
 │     - src/orchestration/sqs_consumer.py -> start_consumer()                  │
@@ -75,12 +75,14 @@ Steps marked `[NOT BUILT]` have no code at all.
 │     bastion host is the only way in.                                         │
 │   - Async pool: All DB calls use await. The pool avoids opening a new TCP    │
 │     connection per request (200ms saved per query).                          │
+│   - PG Cache: Key-value caching backed by PostgreSQL replaces external       │
+│     cache dependencies.                                                      │
 │   - Background consumer: Decouples HTTP API from pipeline processing.        │
 │     The API returns immediately; the consumer processes at its own pace.     │
 │                                                                              │
 │ Failure behavior: Each step catches exceptions independently. If the         │
-│ SSH tunnel fails, the app starts without a database. If Redis fails,         │
-│ the app starts without cache. The GET /health endpoint reports which         │
+│ SSH tunnel fails, the app starts without a database. The GET /health         │
+│ endpoint reports which                                                       │
 │ components are connected.                                                    │
 │                                                                              │
 │ Output: FastAPI app running on port 8000 with all routes mounted             │
@@ -141,7 +143,7 @@ Steps marked `[NOT BUILT]` have no code at all.
 │     - Queries workflow.case_execution WHERE vendor_id = :vid                 │
 │     - Counts: total, open (status NOT IN resolved/closed), resolved          │
 │     - Falls back to zeros if DB is unavailable                               │
-│     - TODO: Redis cache at vqms:dashboard:{vendor_id} (5-min TTL)           │
+│     - TODO: PG Cache at vqms:dashboard:{vendor_id} (5-min TTL)              │
 │                                                                              │
 │   SUB-STEP P2.2: FETCH RECENT QUERIES                                       │
 │     - Queries workflow.case_execution WHERE vendor_id = :vid                 │
@@ -230,11 +232,11 @@ Steps marked `[NOT BUILT]` have no code at all.
 │     - src/utils/correlation.py -> generate_query_id() → "VQ-YYYYMMDD-NNNNN" │
 │                                                                              │
 │   SUB-STEP P6.3: IDEMPOTENCY CHECK                                          │
-│     - Redis key: vqms:idempotency:portal:{vendor_id}:{subject}              │
+│     - PG Cache key: vqms:idempotency:portal:{vendor_id}:{subject}           │
 │     - TTL: 604,800s (7 days)                                                │
 │     - If key exists → raise DuplicateQueryError → HTTP 409 Conflict         │
 │     - If key missing → set key with TTL → proceed                           │
-│     - If Redis down → log warning, allow through (fail-open)                │
+│     - If cache unavailable → log warning, allow through (fail-open)         │
 │                                                                              │
 │   SUB-STEP P6.4: BUILD UNIFIED PAYLOAD                                      │
 │     - src/models/query.py -> UnifiedQueryPayload                             │
@@ -260,11 +262,11 @@ Steps marked `[NOT BUILT]` have no code at all.
 │     - Message attribute: correlation_id                                      │
 │                                                                              │
 │ Why we use each service:                                                     │
-│   - Redis (idempotency key): Prevents the same query from creating two       │
+│   - PG Cache (idempotency key): Prevents the same query from creating two    │
 │     tickets if the vendor double-clicks Submit. 7-day TTL because vendor     │
 │     might retry a few days later if they think it did not go through.        │
 │   - PostgreSQL (case_execution): The permanent record of every query.        │
-│     Redis caches are fast but they expire. This is the source of truth.      │
+│     Caches are fast but they expire. This is the source of truth.            │
 │   - EventBridge (QueryReceived): Lets dashboards, audit trail, and SLA       │
 │     services react to new queries without coupling them to intake code.      │
 │   - SQS (query-intake-queue): Decouples the API response from AI            │
@@ -272,7 +274,7 @@ Steps marked `[NOT BUILT]` have no code at all.
 │     The AI pipeline picks it up asynchronously.                              │
 │                                                                              │
 │ Services used:                                                               │
-│   - Redis (vqms:idempotency:portal:*): Duplicate detection                  │
+│   - PG Cache (vqms:idempotency:portal:*): Duplicate detection               │
 │   - PostgreSQL (workflow.case_execution): Permanent state record             │
 │   - EventBridge (QueryReceived): Event notification                          │
 │   - SQS (vqms-query-intake-queue): Pipeline handoff                         │
@@ -355,12 +357,12 @@ Steps marked `[NOT BUILT]` have no code at all.
 │     - Returns EmailMessage model with parsed headers, body, attachments      │
 │                                                                              │
 │   SUB-STEP E2.2: IDEMPOTENCY CHECK                                          │
-│     - Redis key: vqms:idempotency:{message_id}                              │
+│     - PG Cache key: vqms:idempotency:{message_id}                           │
 │     - TTL: 604,800s (7 days)                                                │
 │     - Why 7 days: Exchange Online can redeliver emails up to 5 days          │
 │       after the original send during recovery. 7 days covers that.          │
 │     - If key exists → raise DuplicateQueryError → skip this email           │
-│     - If Redis down → log warning, allow through (fail-open)                │
+│     - If cache unavailable → log warning, allow through (fail-open)         │
 │                                                                              │
 │   SUB-STEP E2.3: VENDOR RESOLUTION (Salesforce 3-step fallback)             │
 │     - src/adapters/salesforce.py -> find_vendor_by_email()                   │
@@ -378,7 +380,7 @@ Steps marked `[NOT BUILT]` have no code at all.
 │     - Checks in_reply_to, references headers, and conversation_id           │
 │     - If found → thread_status = EXISTING_OPEN (reply to existing query)    │
 │     - If not found → thread_status = NEW                                     │
-│     - Uses Redis key: vqms:thread:{message_id} (24h TTL)                    │
+│     - Uses PG Cache key: vqms:thread:{message_id} (24h TTL)                 │
 │                                                                              │
 │   SUB-STEP E2.5: UPLOAD ATTACHMENTS TO S3                                   │
 │     - S3 bucket: vqms-email-attachments-prod                                 │
@@ -421,7 +423,7 @@ Steps marked `[NOT BUILT]` have no code at all.
 │ Why we use each service:                                                     │
 │   - Graph API (MSAL OAuth2): Fetches the actual email content. Webhooks     │
 │     only tell us something arrived — we still need to download it.           │
-│   - Redis (idempotency): Exchange Online can redeliver the same email       │
+│   - PG Cache (idempotency): Exchange Online can redeliver the same email    │
 │     during recovery mode. Without this check, one email could create         │
 │     multiple tickets.                                                        │
 │   - Salesforce (vendor resolution): We need to know which vendor account    │
@@ -441,8 +443,8 @@ Steps marked `[NOT BUILT]` have no code at all.
 │                                                                              │
 │ Services used:                                                               │
 │   - Microsoft Graph API: Email fetch                                         │
-│   - Redis (vqms:idempotency:{message_id}): Duplicate detection              │
-│   - Redis (vqms:thread:{message_id}): Thread correlation lookup              │
+│   - PG Cache (vqms:idempotency:{message_id}): Duplicate detection           │
+│   - PG Cache (vqms:thread:{message_id}): Thread correlation lookup           │
 │   - Salesforce CRM (Vendor_Account__c, Vendor_Contact__c): Vendor match     │
 │   - S3 (vqms-email-raw-prod): Raw email archive                             │
 │   - S3 (vqms-email-attachments-prod): Attachment files                       │
@@ -522,7 +524,7 @@ Steps marked `[NOT BUILT]` have no code at all.
 │     - Marks the query as actively being processed by the AI pipeline        │
 │                                                                              │
 │   SUB-STEP 7.2: CACHE WORKFLOW STATE                                        │
-│     - Redis key: vqms:workflow:{execution_id}                                │
+│     - PG Cache key: vqms:workflow:{execution_id}                             │
 │     - TTL: 86,400s (24 hours)                                               │
 │     - Value: JSON {status, query_id, vendor_id, step: "context_loading"}    │
 │     - Why 24h: Most queries resolve in minutes to hours. 24h is a safe      │
@@ -530,8 +532,8 @@ Steps marked `[NOT BUILT]` have no code at all.
 │                                                                              │
 │   SUB-STEP 7.3: LOAD VENDOR PROFILE                                        │
 │     - src/services/memory_context.py -> load_vendor_profile()                │
-│     - First check: Redis key vqms:vendor:{vendor_id} (1h TTL)              │
-│     - Cache miss: Salesforce CRM lookup → cache result in Redis             │
+│     - First check: PG Cache key vqms:vendor:{vendor_id} (1h TTL)           │
+│     - Cache miss: Salesforce CRM lookup → cache result in PG Cache          │
 │     - Returns: VendorProfile {vendor_id, vendor_name, tier, risk_flags,     │
 │       account_manager, payment_terms}                                        │
 │     - Why 1h TTL: Vendor tier changes rarely (maybe monthly), but we do     │
@@ -556,7 +558,7 @@ Steps marked `[NOT BUILT]` have no code at all.
 │        actor="system", timestamp)                                            │
 │                                                                              │
 │ Why we use each service:                                                     │
-│   - Redis (vendor cache): Salesforce API calls take 200-500ms. Caching     │
+│   - PG Cache (vendor cache): Salesforce API calls take 200-500ms. Caching  │
 │     the profile for 1 hour means we pay that cost once per vendor per        │
 │     hour, not once per query.                                                │
 │   - PostgreSQL (episodic_memory): Past queries give the AI context.          │
@@ -567,8 +569,8 @@ Steps marked `[NOT BUILT]` have no code at all.
 │                                                                              │
 │ Services used:                                                               │
 │   - PostgreSQL (workflow.case_execution): Status update                      │
-│   - Redis (vqms:workflow:{execution_id}): Fast state cache                   │
-│   - Redis (vqms:vendor:{vendor_id}): Vendor profile cache                   │
+│   - PG Cache (vqms:workflow:{execution_id}): Fast state cache                │
+│   - PG Cache (vqms:vendor:{vendor_id}): Vendor profile cache                │
 │   - Salesforce CRM (fallback): Vendor profile lookup                        │
 │   - PostgreSQL (memory.episodic_memory): Vendor query history               │
 │   - PostgreSQL (audit.action_log): Audit trail                              │
@@ -623,7 +625,7 @@ Steps marked `[NOT BUILT]` have no code at all.
 │     - PostgreSQL: UPDATE workflow.case_execution SET                          │
 │       analysis_result = :json, status = 'analysis_complete',                 │
 │       intent = :intent, urgency = :urgency, confidence = :score             │
-│     - Redis: UPDATE vqms:workflow:{execution_id} with                        │
+│     - PG Cache: UPDATE vqms:workflow:{execution_id} with                     │
 │       {confidence, intent, urgency, step: "query_analysis"}                 │
 │                                                                              │
 │   SUB-STEP 8.5: UPLOAD PROMPT SNAPSHOT FOR AUDIT                           │
@@ -650,7 +652,7 @@ Steps marked `[NOT BUILT]` have no code at all.
 │   - Amazon Bedrock (Claude Sonnet 3.5): LLM inference                       │
 │   - OpenAI GPT-4o (fallback): LLM inference if Bedrock fails               │
 │   - PostgreSQL (workflow.case_execution): Result persistence                 │
-│   - Redis (vqms:workflow:{execution_id}): Fast state update                  │
+│   - PG Cache (vqms:workflow:{execution_id}): Fast state update               │
 │   - S3 (vqms-knowledge-artifacts-prod): Prompt audit trail                   │
 │   - EventBridge (AnalysisCompleted): Event notification                      │
 │   - PostgreSQL (audit.action_log): Audit trail                              │
@@ -835,7 +837,7 @@ Steps marked `[NOT BUILT]` have no code at all.
 │   - Sets selected_path = "A"                                                 │
 │   - UPDATE workflow.case_execution SET status = 'resolving_ai',              │
 │     selected_path = 'A'                                                      │
-│   - UPDATE Redis vqms:workflow:{execution_id} with path + status             │
+│   - UPDATE PG Cache vqms:workflow:{execution_id} with path + status          │
 │   - Publish EventBridge "PathASelected"                                      │
 │   - INSERT INTO audit.action_log (action="PATH_A_SELECTED")                  │
 │                                                                              │
@@ -859,7 +861,7 @@ Steps marked `[NOT BUILT]` have no code at all.
 │   - Sets selected_path = "B"                                                 │
 │   - UPDATE workflow.case_execution SET status = 'awaiting_team_resolution',  │
 │     selected_path = 'B'                                                      │
-│   - UPDATE Redis vqms:workflow:{execution_id} with path + status             │
+│   - UPDATE PG Cache vqms:workflow:{execution_id} with path + status          │
 │   - Publish EventBridge "PathBSelected"                                      │
 │   - INSERT INTO audit.action_log (action="PATH_B_SELECTED")                  │
 │                                                                              │
@@ -886,7 +888,7 @@ Steps marked `[NOT BUILT]` have no code at all.
 │   - Sets selected_path = "C"                                                 │
 │   - UPDATE workflow.case_execution SET status = 'awaiting_human_review',     │
 │     selected_path = 'C'                                                      │
-│   - UPDATE Redis vqms:workflow:{execution_id} with path + status             │
+│   - UPDATE PG Cache vqms:workflow:{execution_id} with path + status          │
 │   - Publish EventBridge "HumanReviewRequired"                                │
 │   - INSERT INTO audit.action_log (action="PATH_C_SELECTED")                  │
 │                                                                              │
@@ -1075,13 +1077,13 @@ Steps marked `[NOT BUILT]` have no code at all.
 
 ---
 
-## CROSS-CUTTING: REDIS KEY FAMILIES
+## CROSS-CUTTING: CACHE KEY FAMILIES
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│ REDIS — 7 KEY FAMILIES WITH PURPOSE-DRIVEN TTLS                             │
+│ PG CACHE — 7 KEY FAMILIES WITH PURPOSE-DRIVEN TTLS                           │
 │                                                                              │
-│ File: src/cache/redis_client.py                                              │
+│ File: src/cache/kv_store.py                                                  │
 │ Status: [IMPLEMENTED]                                                        │
 │                                                                              │
 │ Key Pattern                          │ TTL       │ Why That TTL              │
@@ -1218,7 +1220,7 @@ Steps marked `[NOT BUILT]` have no code at all.
 # SIMPLE MANAGER-FRIENDLY ASCII FLOW
 
 This section explains the same system in plain English. No service names,
-no Redis keys, no SQL tables. If you are not a developer, read this section.
+no cache keys, no SQL tables. If you are not a developer, read this section.
 
 ---
 

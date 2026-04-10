@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 
 from config.settings import get_settings
-from src.cache.redis_client import get_value, idempotency_key, set_with_ttl
+from src.cache.pg_cache import get_value, idempotency_key, set_with_ttl
 from src.events.eventbridge import publish_event
 from src.models.query import QuerySubmission, UnifiedQueryPayload
 from src.models.workflow import CaseExecution, QuerySource, Status
@@ -27,7 +27,7 @@ from src.utils.correlation import (
     generate_query_id,
 )
 from src.utils.exceptions import DuplicateQueryError
-from src.utils.helpers import utc_now
+from src.utils.helpers import ist_now
 from src.utils.log_context import LogContext
 
 logger = logging.getLogger(__name__)
@@ -45,7 +45,7 @@ async def submit_portal_query(
     This is the main entry point for portal-submitted queries.
     It performs the full intake pipeline:
       1. Generate tracking IDs
-      2. Idempotency check via Redis
+      2. Idempotency check via PostgreSQL cache
       3. Build UnifiedQueryPayload
       4. Store CaseExecution in PostgreSQL (graceful if DB unavailable)
       5. Publish QueryReceived event to EventBridge
@@ -63,12 +63,12 @@ async def submit_portal_query(
 
     Raises:
         DuplicateQueryError: If this query was already submitted
-            (idempotency check found existing Redis key).
+            (idempotency check found existing cache key).
     """
     correlation_id = correlation_id or generate_correlation_id()
     execution_id = generate_execution_id()
     query_id = generate_query_id()
-    now = utc_now()
+    now = ist_now()
 
     ctx = LogContext(
         correlation_id=correlation_id,
@@ -163,11 +163,11 @@ async def _check_idempotency(
     *,
     correlation_id: str | None = None,
 ) -> None:
-    """Check Redis for duplicate submission. Raise if found.
+    """Check PostgreSQL cache for duplicate submission. Raise if found.
 
-    If Redis is unavailable, we log a warning and allow the
+    If the cache is unavailable, we log a warning and allow the
     submission through. Better to process a potential duplicate
-    than to reject a valid query because Redis is down.
+    than to reject a valid query because the database is down.
     """
     key, ttl = idempotency_key(identifier)
 
@@ -188,9 +188,9 @@ async def _check_idempotency(
     except DuplicateQueryError:
         raise
     except Exception:
-        # Redis unavailable — log and continue
+        # Cache unavailable — log and continue
         logger.warning(
-            "Redis unavailable for idempotency check, allowing submission",
+            "Cache unavailable for idempotency check, allowing submission",
             extra={
                 "identifier": identifier,
                 "correlation_id": correlation_id,

@@ -7,8 +7,8 @@ GET /queries/{query_id} — Returns a single query's details.
 These endpoints support the Angular portal frontend. The KPIs are
 queried directly from PostgreSQL (workflow.case_execution table).
 
-# TODO: Add Redis 5-min cache for KPIs as per solution flow doc
-# (redis key: vqms:dashboard:<vendor_id>, TTL: 300 seconds)
+# TODO: Add 5-min cache for KPIs as per solution flow doc
+# (cache key: vqms:dashboard:<vendor_id>, TTL: 300 seconds)
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ async def get_dashboard_kpis(
     Queries workflow.case_execution to count open and resolved queries.
     Returns zeros if the database is not connected (graceful degradation).
 
-    # TODO: Add Redis 5-min cache for KPIs as per solution flow doc
+    # TODO: Add 5-min cache for KPIs as per solution flow doc
     """
     if not x_vendor_id:
         raise HTTPException(

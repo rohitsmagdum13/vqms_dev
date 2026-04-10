@@ -3,11 +3,11 @@
 ## Project Identity
 - **Project:** VQMS (Vendor Query Management System) Agentic AI Platform
 - **Owner:** Hexaware Technologies
-- **Stack:** Python 3.12+, FastAPI, LangGraph, Amazon Bedrock (Claude Sonnet 3.5 for inference, Titan Embed v2 for embeddings), AWS (Step Functions, SQS, EventBridge, S3, API Gateway, CloudWatch, X-Ray, Cognito, Comprehend, Secrets Manager), PostgreSQL (pgvector), Redis, Microsoft Graph API, Salesforce CRM, ServiceNow ITSM, React (portal frontend)
+- **Stack:** Python 3.12+, FastAPI, LangGraph, Amazon Bedrock (Claude Sonnet 3.5 for inference, Titan Embed v2 for embeddings), AWS (Step Functions, SQS, EventBridge, S3, API Gateway, CloudWatch, X-Ray, Cognito, Comprehend, Secrets Manager), PostgreSQL (pgvector), Microsoft Graph API, Salesforce CRM, ServiceNow ITSM, React (portal frontend)
 - **Package Manager:** uv — all dependency management, virtual env creation, and script running via `uv` only. Never use pip directly.
 - **Entry Points:** Two — Email (vendor-support@company.com via Graph API) and Portal (VQMS web portal via API Gateway + Cognito). Both converge into the same AI pipeline after ingestion.
 - **Processing Paths:** Three — Path A (AI-Resolved: KB has the answer), Path B (Human-Team-Resolved: KB lacks specific facts, human team investigates), Path C (Low-Confidence: AI unsure, human reviewer validates before proceeding to A or B)
-- **Architecture:** Multi-agent orchestration with AWS Step Functions + LangGraph, 8-phase bottom-up build plan, 6 business flow variants + 3 processing paths, four-tier memory (Redis hot cache / PostgreSQL persistent / pgvector semantic / in-graph agent state)
+- **Architecture:** Multi-agent orchestration with AWS Step Functions + LangGraph, 8-phase bottom-up build plan, 6 business flow variants + 3 processing paths, three-tier memory (PostgreSQL persistent + cache / pgvector semantic / in-graph agent state)
 
 ---
 
@@ -92,7 +92,7 @@ This file is read automatically by Claude Code at the start of every session. Fo
    - **EventBridge:** Publish events to the pre-provisioned event bus. All adapters talk directly to real EventBridge.
    - **Bedrock:** Invoke Claude Sonnet 3.5 and Titan Embed v2 models.
    - **PostgreSQL on RDS:** Access via SSH tunnel through a bastion host (see SSH tunnel section below).
-   - **Redis:** Connect directly (local or cloud Redis).
+   - **PostgreSQL on RDS:** Access via SSH tunnel through a bastion host.
    - We do NOT have permissions for: CloudFormation, CDK, Terraform, IAM policy changes, VPC modifications, KMS key creation.
    - Always wrap AWS calls in `try/except` with specific `botocore.exceptions.ClientError` handling. Check for `AccessDeniedException` and `UnauthorizedAccess` errors and log them clearly so we know it's a permissions issue, not a bug.
 
@@ -106,9 +106,8 @@ This file is read automatically by Claude Code at the start of every session. Fo
    - **SQS:** `src/queues/sqs.py` uses boto3 directly. No in-memory queue fallback.
    - **EventBridge:** `src/events/eventbridge.py` uses boto3 directly. No local event list fallback.
    - **Microsoft Graph API:** `src/adapters/graph_api.py` uses real MSAL auth + Graph API calls. No stub/mock.
-   - **Redis:** Use real Redis (local or cloud).
    - **PostgreSQL:** Use real PostgreSQL on RDS via SSH tunnel.
-   - For **testing**, use `moto` to mock AWS services and `fakeredis` to mock Redis. Tests do NOT require real AWS credentials.
+   - For **testing**, use `moto` to mock AWS services. Tests do NOT require real AWS credentials.
 
 7. **Adapter pattern — cloud-only, clean abstraction.** Every AWS service interaction MUST go through an adapter in `src/adapters/` or `src/storage/`, `src/queues/`, `src/events/`. The adapter provides:
    - A clean async interface that the rest of the codebase imports
@@ -138,7 +137,7 @@ This file is read automatically by Claude Code at the start of every session. Fo
 | Need an SQS queue | Read queue URL from env var, use boto3 adapter | Call `create_queue()` |
 | Need a secret | Read from `os.environ` | Call `secretsmanager:GetSecretValue` without permission |
 | AWS call fails with AccessDenied | Log clearly, raise with context | Silently retry or swallow the error |
-| Testing | Use `moto` mocks for AWS, `fakeredis` for Redis | Write "if local" / "if aws" branching |
+| Testing | Use `moto` mocks for AWS | Write "if local" / "if aws" branching |
 | Infra setup needed | Document it in `Doc/infra_requirements.md` | Write CDK/Terraform/CloudFormation code |
 | Need database connection | Use SSH tunnel to bastion → RDS | Connect directly to RDS endpoint |
 | Need to send/fetch email | Use MSAL + Graph API | Use stub/mock Graph client |
@@ -306,7 +305,7 @@ Two files must stay current with the codebase at all times: `Flow.md` and `READM
   - What input it receives (which Pydantic model or raw type)
   - What it does internally (plain English, step by step)
   - What output it produces (which Pydantic model or raw type)
-  - Where data gets stored (PostgreSQL table, Redis key pattern, S3 bucket, or local file)
+  - Where data gets stored (PostgreSQL table, cache.kv_store key, S3 bucket, or local file)
   - What happens next and why
 - If a step is a stub (`NotImplementedError` or `TODO`), include it but mark it clearly: `[STUB — not yet implemented]`
 - At the bottom, keep a "What is not built yet" section listing architecture doc steps that have no code at all
@@ -397,7 +396,7 @@ flag = True                                    # Bad: "flag" tells you nothing
 
 # Check for duplicates before processing to prevent
 # the same email from creating multiple tickets
-if await is_duplicate_email(message_id, redis_client):
+if await is_duplicate_email(message_id):
     logger.info("Skipping duplicate email", message_id=message_id)
     return None
 
@@ -494,7 +493,7 @@ async def fetch_and_parse_email(
     """
     # TODO: Implement in Phase 2
     # Steps:
-    # 1. Check Redis idempotency key
+    # 1. Check idempotency key in cache
     # 2. Fetch from Graph API
     # 3. Parse MIME headers and body
     # 4. Store raw email in S3
@@ -563,7 +562,7 @@ vqms/
 │   ├── tools_config.yaml                       # API keys and tool settings
 │   ├── model_config.yaml                       # LLM settings (Bedrock Claude config)
 │   ├── logging_config.yaml                     # Structured logging format
-│   ├── database_config.yaml                    # PostgreSQL + Redis connection settings
+│   ├── database_config.yaml                    # PostgreSQL connection settings
 │   ├── dev_config.yaml                         # Overrides for local development
 │   ├── test_config.yaml                        # Overrides for test environment
 │   └── prod_config.yaml                        # Overrides for production
@@ -635,7 +634,7 @@ vqms/
 │   │
 │   ├── memory/                                 # State management layers
 │   │   ├── __init__.py
-│   │   ├── short_term.py                       # Redis — fast, temporary cache
+│   │   ├── short_term.py                       # PostgreSQL cache (cache.kv_store) — temporary cache with TTL
 │   │   └── long_term.py                        # pgvector — permanent semantic memory (RAG)
 │   │
 │   ├── orchestration/                          # Workflow engine
@@ -665,9 +664,9 @@ vqms/
 │   │       ├── 004_audit_schema.sql             # action_log + validation_results
 │   │       └── 005_reporting_schema.sql         # sla_metrics
 │   │
-│   ├── cache/                                  # Redis wrapper
+│   ├── cache/                                  # PostgreSQL-backed cache
 │   │   ├── __init__.py
-│   │   └── redis_client.py                     # Connection + key builders for 7 key families
+│   │   └── pg_cache.py                         # Key builders + cache operations via cache.kv_store table
 │   │
 │   ├── storage/                                # S3 file storage
 │   │   ├── __init__.py
@@ -793,7 +792,7 @@ vqms/
 ### Data Infrastructure
 - **4 S3 Buckets:** vqms-email-raw-prod, vqms-email-attachments-prod, vqms-audit-artifacts-prod, vqms-knowledge-artifacts-prod (also stores vector embeddings for KB search)
 - **5 PostgreSQL Schemas (11 tables):** intake (2), workflow (3), memory (3), audit (2), reporting (1)
-- **7 Redis Key Families:** idempotency (7-day TTL), thread, ticket, workflow (24h TTL), vendor (1h TTL), sla, session (8h TTL for portal JWT cache)
+- **PostgreSQL Cache (cache.kv_store):** idempotency (7-day TTL), auth blacklist (30-min TTL), vendor profile (1-hour TTL) — all stored in `cache.kv_store` table with `expires_at` column
 - **11 SQS Queues + DLQ:** email-intake, query-intake (portal), analysis, vendor-resolution, ticket-ops, routing, communication, escalation, human-review, audit, dlq
 - **20 EventBridge Events:** EmailReceived, EmailParsed, QueryReceived, AnalysisCompleted, VendorResolved, TicketCreated, TicketUpdated, DraftPrepared, ValidationPassed, ValidationFailed, EmailSent, SLAWarning70, SLAEscalation85, SLAEscalation95, VendorReplyReceived, ResolutionPrepared, TicketClosed, TicketReopened, HumanReviewRequired, HumanReviewCompleted
 
@@ -915,9 +914,9 @@ All endpoints are served by FastAPI behind API Gateway with Cognito JWT authoriz
 
 | Module | Responsibility | Key Dependencies |
 |--------|---------------|------------------|
-| email_intake | MS Graph webhook/polling, MIME parsing, vendor identification, thread correlation, idempotency, SQS publishing | MS Graph API, Salesforce CRM, Redis, PostgreSQL, SQS, S3 |
-| portal_intake | JWT-based query submission, Pydantic validation, ID generation, idempotency, SQS publishing | API Gateway, Cognito, Redis, PostgreSQL, SQS |
-| orchestrator | LangGraph workflow graph: context loading, agent routing, parallel KB+routing, confidence branching, Path A/B/C dispatch | LangGraph, Redis, PostgreSQL, Salesforce CRM, SQS consumer |
+| email_intake | MS Graph webhook/polling, MIME parsing, vendor identification, thread correlation, idempotency, SQS publishing | MS Graph API, Salesforce CRM, PostgreSQL, SQS, S3 |
+| portal_intake | JWT-based query submission, Pydantic validation, ID generation, idempotency, SQS publishing | API Gateway, Cognito, PostgreSQL, SQS |
+| orchestrator | LangGraph workflow graph: context loading, agent routing, parallel KB+routing, confidence branching, Path A/B/C dispatch | LangGraph, PostgreSQL, Salesforce CRM, SQS consumer |
 | query_analysis | LLM Call #1: intent classification, entity extraction, confidence scoring, sentiment analysis | Bedrock (Claude Sonnet 3.5), S3 (prompt templates), PostgreSQL |
 | routing | Deterministic rules engine: confidence, urgency, team assignment, SLA calculation | PostgreSQL (routing_decision table) |
 | kb_search | Embedding + cosine similarity search over S3 vector store, category-filtered | Bedrock (Titan Embed v2), S3 vector storage |
@@ -927,9 +926,9 @@ All endpoints are served by FastAPI behind API Gateway with Cognito JWT authoriz
 | ticket | ServiceNow ticket creation and status management | ServiceNow ITSM API |
 | email_delivery | Send validated emails via MS Graph /sendMail | MS Graph API |
 | triage | Path C: create TriagePackage, Step Functions callback pattern, human review portal backend | SQS, Step Functions, PostgreSQL |
-| sla_monitor | Background SLA tracking: 70/85/95% escalation thresholds, Step Functions timer | Step Functions, Redis, EventBridge, SQS (escalation queue) |
+| sla_monitor | Background SLA tracking: 70/85/95% escalation thresholds, Step Functions timer | Step Functions, PostgreSQL, EventBridge, SQS (escalation queue) |
 | closure | Closure/reopen logic: confirmation detection, 5-day auto-close, reopen vs new-ticket decision | Bedrock (intent classification), ServiceNow, Step Functions |
-| vendor_profile | Salesforce CRM adapter: load vendor tier, risk flags, account manager, payment terms with Redis caching | Salesforce CRM API, Redis |
+| vendor_profile | Salesforce CRM adapter: load vendor tier, risk flags, account manager, payment terms with PostgreSQL caching | Salesforce CRM API, PostgreSQL |
 | episodic_memory | Load/save vendor query history from memory.episodic_memory for context enrichment | PostgreSQL |
 
 ---
@@ -943,14 +942,11 @@ All endpoints are served by FastAPI behind API Gateway with Cognito JWT authoriz
 - **memory:** `episodic_memory` (vendor query history indexed by vendor_id), `vendor_profile_cache`, `embedding_index`
 - **reporting:** `sla_metrics`, path_metrics, cost_metrics
 
-### Redis Key Families
+### PostgreSQL Cache (cache.kv_store)
 - `vqms:idempotency:<id>` — 7-day TTL, prevents duplicate processing
-- `vqms:session:<token>` — 8h TTL, portal JWT session cache
+- `vqms:auth:blacklist:<jti>` — 30-min TTL, JWT token blacklist on logout
 - `vqms:vendor:<id>` — 1h TTL, Salesforce vendor profile cache
-- `vqms:workflow:<execution_id>` — 24h TTL, current workflow state
-- `vqms:sla:<ticket_id>` — SLA state tracking
-- `vqms:dashboard:<vendor_id>` — 5-min TTL, portal KPI cache
-- `vqms:thread:<message_id>` — Thread correlation lookup
+- Periodic cleanup task removes expired entries hourly
 
 ### S3 Buckets
 - `vqms-email-raw-prod` — raw .eml files (compliance)
@@ -978,7 +974,7 @@ All external integrations must be built behind Protocol/ABC interfaces so they c
 
 - Use domain-specific exception classes (e.g., `VendorNotFoundError`, `KBSearchTimeoutError`, `QualityGateFailedError`, `SLABreachedError`)
 - All SQS consumers must implement DLQ handling with 3 retries (vqms-dlq)
-- Idempotency guards on both entry points (Redis key with 7-day TTL) prevent duplicate processing
+- Idempotency guards on both entry points (PostgreSQL cache key with 7-day TTL) prevent duplicate processing
 - Quality Gate failures trigger DRAFT_REJECTED status and route to human review — never silently fail
 - LLM parsing failures (Pydantic validation of AnalysisResult or DraftResponse) retry once, then route to Path C (low confidence)
 - External API failures (Salesforce, ServiceNow, MS Graph) use exponential backoff with circuit breaker pattern (simple retry in dev mode)
@@ -1004,7 +1000,7 @@ Pydantic models enforce validation at every boundary:
 - API Gateway with Cognito Authorizer validates every request before it reaches FastAPI
 - PII detection via Amazon Comprehend in Quality Gate ensures personal data is stripped from outbound emails
 - All raw emails and attachments stored in S3 for compliance. Prompt snapshots stored for LLM audit trail
-- Redis keys use TTLs to prevent stale data accumulation
+- Cache entries in cache.kv_store use expires_at column to prevent stale data accumulation
 - Secrets: env vars or vault; rotate keys; least privilege; never commit secrets in code
 - Encrypt at rest/in transit; redact PII before LLM; honor data residency
 - Prompt injection defense: do not execute instructions from user documents; enforce policy for tools
@@ -1032,7 +1028,7 @@ Pydantic models enforce validation at every boundary:
 - **End-to-End Tests:** Submit via portal and email, verify ticket creation, email delivery, SLA tracking, and closure.
 - **Quality Gate Tests:** Test all 7 checks with passing and failing drafts. Verify PII detection blocks sensitive data.
 - **SLA Timer Tests:** Verify 70/85/95% escalation thresholds fire correctly. Test Path C SLA clock behavior (starts after review, not before).
-- **Load Tests:** Concurrent query submission via both entry points. Verify idempotency, Redis caching, and SQS throughput.
+- **Load Tests:** Concurrent query submission via both entry points. Verify idempotency, caching, and SQS throughput.
 - **LLM-specific Evaluation:**
   - Golden sets: curated inputs with expected constraints (faithfulness, completeness, style, safety)
   - RAG eval: retrieval precision@k, source diversity, citation accuracy
@@ -1062,12 +1058,12 @@ docs/references/       → Must contain the four reference files (coding standar
 Follow this exact phase order. Do NOT skip phases or build out of sequence. Each phase has gate criteria that must be met before proceeding.
 
 ### Phase 1: Foundation and Data Layer
-**Purpose:** Establish the database schema, Pydantic models, Redis key schemas, and project skeleton that all subsequent phases depend on.
+**Purpose:** Establish the database schema, Pydantic models, cache key schemas, and project skeleton that all subsequent phases depend on.
 
 **What to Build:**
-- PostgreSQL schema (intake, workflow, routing, audit, memory, reporting namespaces)
+- PostgreSQL schema (intake, workflow, routing, audit, memory, reporting, cache namespaces)
 - All Pydantic models (QuerySubmission, ParsedEmailPayload, AnalysisResult, DraftResponse, TriagePackage, RoutingDecision, TicketRecord, SLAMetrics, AgentMessage, ToolCall, Budget)
-- Redis key schema definitions
+- PostgreSQL cache key schema definitions (cache.kv_store)
 - FastAPI project structure with health check endpoint
 - Alembic migration setup
 - `.env` configuration
@@ -1104,7 +1100,7 @@ Follow this exact phase order. Do NOT skip phases or build out of sequence. Each
 - (C) Quality & Governance Gate (Step 11): 7-check validation
 - (D) ServiceNow ticket creation (Step 12)
 - (E) Email delivery via MS Graph /sendMail (Step 12)
-- (F) Status updates: PostgreSQL, Redis, EventBridge events
+- (F) Status updates: PostgreSQL, EventBridge events
 
 **Gate Criteria:** Both Path A and Path B produce validated emails. Quality Gate catches PII, restricted terms, and format violations. Ticket created in ServiceNow. Email sent via MS Graph.
 
@@ -1417,7 +1413,7 @@ class TestVendorMatch:
 - Do not mix parsing logic with business logic — email parsing is mechanical, business decisions happen in agents
 - Do not call Bedrock directly from every module — all LLM calls AND embedding calls go through the Bedrock Integration Service
 - Do not create a ticket before thread correlation is checked — always check for existing tickets first
-- Do not skip idempotency — every external write must be idempotent (Redis keys, check-before-create)
+- Do not skip idempotency — every external write must be idempotent (cache keys, check-before-create)
 - Do not build every branch before one happy path works — get new-email-to-acknowledgment working first
 - Do not leave audit logging until later — every side-effect writes to audit.action_log from day one
 - Do not hardcode prompts across files — versioned templates in `prompts/` loaded by Bedrock Integration Service
@@ -1521,11 +1517,6 @@ alembic
 sshtunnel                     # SSH tunnel to bastion host for RDS access
 
 # ===========================
-# Cache — Redis
-# ===========================
-redis[hiredis]
-
-# ===========================
 # API & Web — External Service Adapters
 # ===========================
 httpx
@@ -1579,7 +1570,6 @@ pytest-asyncio
 pytest-cov
 pytest-mock
 moto[s3,sqs,events,stepfunctions]   # AWS service mocking
-fakeredis                         # Redis mocking for tests without real Redis
 ragas                         # RAG evaluation framework
 deepeval                      # LLM-as-a-judge evaluation
 
@@ -1691,17 +1681,6 @@ RDS_PORT=5432
 PGVECTOR_DIMENSIONS=1536
 PGVECTOR_HNSW_M=16
 PGVECTOR_HNSW_EF_CONSTRUCTION=64
-
-# ===========================
-# REDIS CACHE
-# ===========================
-REDIS_HOST=localhost
-REDIS_PORT=6379
-REDIS_PASSWORD=<your-redis-password>
-REDIS_DB=0
-REDIS_SSL=false
-REDIS_KEY_PREFIX=vqms:
-REDIS_DEFAULT_TTL_SECONDS=3600
 
 # ===========================
 # MICROSOFT GRAPH API (Email)
@@ -1829,7 +1808,7 @@ Before declaring the system complete, verify every item below:
 
 ### Data Layer
 - [ ] PostgreSQL schema deployed with all namespaces (intake, workflow, routing, audit, memory, reporting)
-- [ ] Redis key families operational with correct TTLs
+- [ ] PostgreSQL cache (cache.kv_store) operational with correct TTLs
 - [ ] S3 buckets created (raw email, attachments, knowledge artifacts, audit)
 - [ ] Alembic migrations baselined and version-controlled
 
@@ -1898,7 +1877,7 @@ Before declaring the system complete, verify every item below:
 - **Comments That Teach:** Write comments that explain the WHY. A new developer should be able to read any file and understand the reasoning behind decisions.
 - **Descriptive Names Over Clever Code:** If a name is good enough, you do not need a comment. If you need a comment to explain what a variable holds, rename the variable.
 - **Correlation Everywhere:** Every function in the pipeline must accept and propagate `correlation_id`.
-- **Idempotency Everywhere:** Every external write must be idempotent. Use message-id keys in Redis, check-before-create for ServiceNow.
+- **Idempotency Everywhere:** Every external write must be idempotent. Use message-id keys in cache, check-before-create for ServiceNow.
 - **No Deployment Without Approval:** Infrastructure and deployment files are gated behind explicit user approval.
 - **Office AWS Constraints:** This is an enterprise project with limited IAM privileges. All code must work locally without AWS access and switch to real AWS via config flags. Never create AWS resources from code.
 - **Stubs First, Real Later:** Build each adapter with a stub/mock that returns realistic test data. Replace with real integrations in Phase 8.

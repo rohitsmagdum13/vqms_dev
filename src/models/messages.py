@@ -16,7 +16,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from src.utils.helpers import utc_now
+from src.utils.helpers import ist_now
 
 
 class ToolCall(BaseModel):
@@ -70,7 +70,7 @@ class AgentMessage(BaseModel):
     correlation_id: str = Field(
         description="UUID4 tracing ID linking to the query",
     )
-    timestamp: datetime = Field(default_factory=utc_now)
+    timestamp: datetime = Field(default_factory=ist_now)
     metadata: dict[str, Any] = Field(
         default_factory=dict,
         description="Additional context: tokens_used, cost, model_id, prompt_id",

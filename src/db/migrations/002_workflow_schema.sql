@@ -29,9 +29,9 @@ CREATE TABLE workflow.case_execution (
     analysis_result JSONB,                             -- Serialized AnalysisResult from Step 8
     routing_decision JSONB,                            -- Serialized RoutingDecision from Step 9A
     selected_path   VARCHAR(1),                        -- A, B, or C
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    completed_at    TIMESTAMPTZ                        -- Set when case is closed/resolved
+    created_at      TIMESTAMP NOT NULL DEFAULT (now() AT TIME ZONE 'Asia/Kolkata'),
+    updated_at      TIMESTAMP NOT NULL DEFAULT (now() AT TIME ZONE 'Asia/Kolkata'),
+    completed_at    TIMESTAMP                           -- Set when case is closed/resolved (IST)
 );
 
 -- ticket_link: Tracks which ServiceNow tickets are associated
@@ -43,7 +43,7 @@ CREATE TABLE workflow.ticket_link (
     ticket_id       VARCHAR(64) NOT NULL,              -- ServiceNow incident sys_id
     ticket_number   VARCHAR(32),                       -- INC0012345 (human-readable)
     link_type       VARCHAR(20) NOT NULL,              -- CREATED, UPDATED, REOPENED
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at      TIMESTAMP NOT NULL DEFAULT (now() AT TIME ZONE 'Asia/Kolkata')
 );
 
 -- routing_decision: Output of the deterministic routing engine.
@@ -59,7 +59,7 @@ CREATE TABLE workflow.routing_decision (
     confidence_score  REAL,
     path              VARCHAR(1) NOT NULL,             -- A, B, or C
     automation_blocked BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at        TIMESTAMP NOT NULL DEFAULT (now() AT TIME ZONE 'Asia/Kolkata')
 );
 
 -- Indexes

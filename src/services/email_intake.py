@@ -20,7 +20,7 @@ import logging
 
 from config.settings import get_settings
 from src.adapters.graph_api import fetch_email_by_resource
-from src.cache.redis_client import get_value, idempotency_key, set_with_ttl
+from src.cache.pg_cache import get_value, idempotency_key, set_with_ttl
 from src.events.eventbridge import publish_event
 from src.models.query import QuerySource, UnifiedQueryPayload
 from src.models.workflow import CaseExecution, Status
@@ -33,7 +33,7 @@ from src.utils.correlation import (
     generate_query_id,
 )
 from src.utils.exceptions import DuplicateQueryError
-from src.utils.helpers import utc_now
+from src.utils.helpers import ist_now
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ async def process_email_notification(
     It performs the full email intake pipeline:
       1. Generate correlation_id
       2. Fetch email via Graph API adapter
-      3. Idempotency check on message_id via Redis
+      3. Idempotency check on message_id via PostgreSQL cache
       4. Vendor resolution via Salesforce adapter
       5. Thread correlation (NEW vs EXISTING_OPEN vs REPLY_TO_CLOSED)
       6. Store raw email in S3
@@ -69,7 +69,7 @@ async def process_email_notification(
 
     Raises:
         DuplicateQueryError: If this email was already processed
-            (message_id found in Redis idempotency store).
+            (message_id found in PostgreSQL cache idempotency store).
     """
     correlation_id = correlation_id or generate_correlation_id()
     settings = get_settings()
@@ -158,7 +158,7 @@ async def process_email_notification(
         reference_number=None,
         thread_status=thread_status,
         message_id=email.message_id,
-        received_at=email.received_at or utc_now(),
+        received_at=email.received_at or ist_now(),
     )
 
     # --- Step 8: Store CaseExecution (graceful) ---
@@ -219,7 +219,7 @@ async def _check_email_idempotency(
     *,
     correlation_id: str | None = None,
 ) -> None:
-    """Check Redis for duplicate email processing.
+    """Check PostgreSQL cache for duplicate email processing.
 
     Uses the email message_id as the idempotency key. Exchange Online
     can redeliver emails up to 5 days after the original send in
@@ -243,9 +243,9 @@ async def _check_email_idempotency(
     except DuplicateQueryError:
         raise
     except Exception:
-        # Redis unavailable — log and continue
+        # Cache unavailable — log and continue
         logger.warning(
-            "Redis unavailable for email idempotency check",
+            "Cache unavailable for email idempotency check",
             extra={
                 "message_id": message_id,
                 "correlation_id": correlation_id,

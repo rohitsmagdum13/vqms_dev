@@ -7,7 +7,9 @@ test valid creation, test defaults, test validation errors.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
+
+from src.utils.helpers import IST
 
 import pytest
 
@@ -245,7 +247,7 @@ class TestEmailMessage:
             sender_email="vendor@acme.com",
             subject="Invoice Query",
             body_text="Please check invoice INV-001",
-            received_at=datetime.now(timezone.utc),
+            received_at=datetime.now(IST),
         )
         assert msg.message_id == "<abc123@mail.com>"
         assert msg.attachments == []
@@ -261,7 +263,7 @@ class TestParsedEmailPayload:
             sender_email="vendor@test.com",
             subject="Test",
             body_text="Test body",
-            received_at=datetime.now(timezone.utc),
+            received_at=datetime.now(IST),
         )
         payload = ParsedEmailPayload(
             email=email_msg,
